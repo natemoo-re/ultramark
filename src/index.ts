@@ -17,7 +17,6 @@ const BLOCK_QUOTE_MARKER_RE = /^[ \t]{0,3}\>/;
 const UNORDERED_LIST_MARKER_RE = /^[*+-]/;
 const ORDERED_LIST_MARKER_RE = /^(\d{1,9})([.)])/;
 
-const MAYBE_SPECIAL_RE = /^[#`~*+_=<>0-9-]/;
 const NON_SPACE_RE = /[^ \t\f\v\r\n]/;
 
 const ATX_HEADING_MARKER_RE = /^#{1,6}(?:[ \t]+|$)/;
@@ -210,6 +209,10 @@ function* blocks(input: string, flags: number): Generator<any[]> {
   yield* flush();
 }
 
+function inlines(input: string, flags: number, ctx: any): string {
+  return encode(input);
+}
+
 export function parse(input: string, opts: Options = {}) {
   const flags = resolveFlags(opts);
   let result = ''
@@ -236,16 +239,16 @@ export function parse(input: string, opts: Options = {}) {
         break;
       }
       case BLOCK_HEADING: {
-        result += `<h${detail}>${children}</h${detail}>`;
+        result += `<h${detail}>${inlines(children, flags, {})}</h${detail}>`;
         break;
       }
       case BLOCK_PARAGRAPH: {
-        result += `<p>${children}</p>`;
+        result += `<p>${inlines(children, flags, {})}</p>`;
         break;
       }
       case BLOCK_CODE: {
         const lang = detail;
-        result += `<pre><code${lang ? ` class="language-${lang}"` : ''}>${children}</code></pre>`
+        result += `<pre><code${lang ? ` class="language-${lang}"` : ''}>${inlines(children, flags, {})}</code></pre>`
         break;
       }
     }
