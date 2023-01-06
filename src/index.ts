@@ -6,16 +6,15 @@ const BLOCK_HTML = 46;
 const BLOCK_LINK_REFERENCE = 47;
 const BLOCK_PARAGRAPH = 48;
 // (5) Container Blocks
-const BLOCK_QUOTE_OPEN = 510;
-const BLOCK_QUOTE_CLOSE = 511;
+const BLOCK_QUOTE = 51;
 const BLOCK_LIST_ITEM = 52;
-const BLOCK_LIST_OPEN = 530;
-const BLOCK_LIST_CLOSE = 531;
+const BLOCK_LIST_UNORDERED = 530;
+const BLOCK_LIST_ORDERED = 531;
 
 const THEMATIC_BREAK_RE =
   /^(?:\*[ \t]*){3,}$|^(?:_[ \t]*){3,}$|^(?:-[ \t]*){3,}$/;
 const BLOCK_QUOTE_MARKER_RE = /^[ \t]{0,3}\>/;
-const BULLET_LIST_MARKER_RE = /^[*+-]/;
+const UNORDERED_LIST_MARKER_RE = /^[*+-]/;
 const ORDERED_LIST_MARKER_RE = /^(\d{1,9})([.)])/;
 
 const MAYBE_SPECIAL_RE = /^[#`~*+_=<>0-9-]/;
@@ -84,6 +83,10 @@ function encode(str: string) {
 	return str.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+function dedent(str: string) {
+	return str.replace(RegExp('^'+(str.match(/^(\t| )+/) || '')[0], 'gm'), '');
+}
+
 function trim(line: string, flags: number) {
   if (flags & FLAG_NO_INDENTED_CODE_BLOCKS) return line.trimStart();
   return line.replace(ALLOWED_LEADING_WHITESPACE_RE, '');
@@ -94,18 +97,41 @@ function extractATXHeading(line: string): [string, number] {
   return [line.slice(marker.length).replace(/^[ \t]*#+[ \t]*$/, "").replace(/[ \t]+#+[ \t]*$/, "").trim(), marker.trim().length];
 }
 
-function* blocks(input: string, flags: number) {
+function removeLeadingPattern(input: string, re: RegExp): string {
+  const lines = input.split(/\r?\n/);
+  let output = '';
+  for (const line of lines) {
+    output += line.replace(re, '');
+    output += '\n';
+  }
+  return output
+}
+
+function* blocks(input: string, flags: number): Generator<any[]> {
   const lines = input.split(/\r?\n/);
   let chunk = '';
   let chunkType = BLOCK_PARAGRAPH;
   let chunkDetail: any[] = [];
 
-  function* flush() {
+  function* flush(): Generator<any[]> {
     if (chunk) {
       if (INDENTED_CODE_BLOCK_RE.test(chunk)) {
         yield [BLOCK_CODE, chunk.trimStart() + '\n'];
       } else if (chunkType === BLOCK_CODE) {
         yield [BLOCK_CODE, chunk + '\n', chunkDetail[1]]
+      } else if (chunkType === BLOCK_QUOTE) {
+        yield [BLOCK_QUOTE, null, 1]
+        yield* blocks(removeLeadingPattern(chunk, BLOCK_QUOTE_MARKER_RE), flags);
+        yield [BLOCK_QUOTE, null, -1]
+      } else if (chunkType === BLOCK_LIST_ORDERED || chunkType === BLOCK_LIST_UNORDERED) {
+        yield [chunkType, null, 1]
+        for (const block of blocks(removeLeadingPattern(dedent(chunk), chunkType === BLOCK_LIST_ORDERED ? ORDERED_LIST_MARKER_RE : UNORDERED_LIST_MARKER_RE), flags)) {
+          if (block[0] === BLOCK_PARAGRAPH) {
+            block[0] = BLOCK_LIST_ITEM;
+          }
+          yield block;
+        }
+        yield [chunkType, null, -1]
       } else {
         yield [chunkType, chunk.trim(), chunkDetail];
       }
@@ -157,6 +183,21 @@ function* blocks(input: string, flags: number) {
       }
       chunkDetail = [marker, lang, attr]
       continue;
+    } else if (BLOCK_QUOTE_MARKER_RE.test(trim(line, flags)) && chunkType !== BLOCK_QUOTE) {
+      yield* flush();
+      chunkType = BLOCK_QUOTE;
+    } else if (chunkType === BLOCK_QUOTE && !BLOCK_QUOTE_MARKER_RE.test(line)) {
+      yield* flush();
+    } else if (UNORDERED_LIST_MARKER_RE.test(trim(line, flags)) && chunkType !== BLOCK_LIST_UNORDERED) {
+      yield* flush();
+      chunkType = BLOCK_LIST_UNORDERED;
+    } else if (chunkType === BLOCK_LIST_UNORDERED && !UNORDERED_LIST_MARKER_RE.test(line)) {
+      yield* flush();
+    } else if (ORDERED_LIST_MARKER_RE.test(trim(line, flags)) && chunkType !== BLOCK_LIST_ORDERED) {
+      yield* flush();
+      chunkType = BLOCK_LIST_ORDERED;
+    } else if (chunkType === BLOCK_LIST_ORDERED && !ORDERED_LIST_MARKER_RE.test(line)) {
+      yield* flush();
     }
     
     if (chunk != '') {
@@ -174,6 +215,22 @@ export function parse(input: string, opts: Options = {}) {
   let result = ''
   for (const [block, children, detail] of blocks(input, flags)) {
     switch (block) {
+      case BLOCK_QUOTE: {
+        result += `<${detail === 1 ? '' : '/'}blockquote>`;
+        break;
+      }
+      case BLOCK_LIST_ITEM: {
+        result += `<li>${children}</li>`;
+        break;
+      }
+      case BLOCK_LIST_ORDERED: {
+        result += `<${detail === 1 ? '' : '/'}ol>`;
+        break;
+      }
+      case BLOCK_LIST_UNORDERED: {
+        result += `<${detail === 1 ? '' : '/'}ul>`;
+        break;
+      }
       case BLOCK_THEMATIC_BREAK: {
         result += '<hr />';
         break;
@@ -191,22 +248,6 @@ export function parse(input: string, opts: Options = {}) {
         result += `<pre><code${lang ? ` class="language-${lang}"` : ''}>${children}</code></pre>`
         break;
       }
-      // case BLOCK_QUOTE_OPEN: {
-      //   result += '<blockquote>';
-      //   break;
-      // }
-      // case BLOCK_QUOTE_CLOSE: {
-      //   result += '</blockquote>';
-      //   break;
-      // }
-      // case BLOCK_LIST_OPEN: {
-      //   result += `<${detail}>`;
-      //   break;
-      // }
-      // case BLOCK_QUOTE_CLOSE: {
-      //   result += `</${detail}>`;
-      //   break;
-      // }
     }
     if (block) result += '\n';
   }
