@@ -5,7 +5,7 @@ import bytes from 'pretty-bytes';
 import colors from 'chalk';
 
 async function run() {
-    const files = await globby(['src/**/*.ts', '!src/env.d.ts']);
+    const files = await globby(['src/**/*.ts']);
     const output = {};
     const promises = [];
     for (const file of files) {
