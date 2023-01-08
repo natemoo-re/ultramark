@@ -1,5 +1,7 @@
 // Internal
 const RAW = -1;
+const EMAIL_AUTOLINK_RE = /^<([a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*)>/;
+const AUTOLINK_RE = /^<[A-Za-z][A-Za-z0-9.+-]{1,31}:[^<>\x00-\x20]*>/i;
 const DOM_PARSER_RE =
   /(?:<(\/?)([!?a-zA-Z][a-zA-Z0-9\:-]*)(?:\s([^>]*?))?((?:\s*\/)?)>|(<\!\-\-)([\s\S]*?)(\-\->)|(<\!)([\s\S]*?)(>))/gm;
 const isHTML = (str: string) => {
@@ -457,7 +459,9 @@ function* inlines(input: string, opts: Options): Generator<any[]> {
       }
     }
 
-    if (isHTML(token)) {
+    if (AUTOLINK_RE.test(token) || EMAIL_AUTOLINK_RE.test(token)) {
+      yield [SPAN_AUTOLINK, token.slice(1, -1)];
+    } else if (isHTML(token)) {
       yield [SPAN_HTML, token]
     } else if (TRAILING_HARD_BREAK_RE.test(token)) {
       yield [SPAN_HARD_LINE_BREAK];
