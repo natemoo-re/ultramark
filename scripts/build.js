@@ -28,6 +28,20 @@ async function run() {
                 output[file] = b;
             })
         )
+        promises.push(
+            build({
+                metafile: true,
+                entryPoints: [file],
+                outfile: file.replace('src', 'dist').replace('.ts', '.cjs'),
+                external: ["../selector.js", "../index.js", "./index.js"],
+                bundle: true,
+                format: 'cjs',
+                minify: true,
+                sourcemap: 'external',
+                target: 'node16',
+                platform: 'node',
+            })
+        )
     }
     await Promise.all(promises);
     for (const [file, size] of Object.entries(output).sort(([a], [b]) => a.localeCompare(b))) {
