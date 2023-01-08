@@ -525,7 +525,7 @@ function parseInline(input: string, opts: Options, ctx: any) {
         break;
       }
       case SPAN_TEXT: {
-        result += encode(unescape(text));
+        result += encode(unescape(text)).replace(/\s{0,1}\n/g, '\n');
         break;
       }
       case SPAN_HTML: {
