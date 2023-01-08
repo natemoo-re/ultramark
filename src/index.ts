@@ -10,21 +10,35 @@ const BLOCK_QUOTE = 51;
 const BLOCK_LIST_ITEM = 52;
 const BLOCK_LIST_UNORDERED = 530;
 const BLOCK_LIST_ORDERED = 531;
+// (6) Inlines
+const SPAN_CODE = 61;
+const SPAN_EMPHASIS = 620;
+const SPAN_STRONG = 621;
+const SPAN_STRONG_EMPHASIS = 622;
+const SPAN_LINK = 63;
+const SPAN_IMAGE = 64;
+const SPAN_AUTOLINK = 65;
+const SPAN_HTML = 66;
+const SPAN_HARD_LINE_BREAK = 67;
+const SPAN_SOFT_LINE_BREAK = 68;
+const SPAN_TEXT = 69;
 
 const THEMATIC_BREAK_RE =
   /^(?:\*[ \t]*){3,}$|^(?:_[ \t]*){3,}$|^(?:-[ \t]*){3,}$/;
 const BLOCK_QUOTE_MARKER_RE = /^[ \t]{0,3}\>/;
-const UNORDERED_LIST_MARKER_RE = /^[*+-]/;
+const UNORDERED_LIST_MARKER_RE = /^[*+-]\s+/;
 const ORDERED_LIST_MARKER_RE = /^(\d{1,9})([.)])/;
 
-const NON_SPACE_RE = /[^ \t\f\v\r\n]/;
+const WHITESPACE_RE = /[ \t\f\v\r\n]/;
 
 const ATX_HEADING_MARKER_RE = /^#{1,6}(?:[ \t]+|$)/;
 const CODE_FENCE_RE = /(^`{3,}(?!.*`)|^~{3,})/;
 const CLOSING_CODE_FENCE_RE = /^(?:`{3,}|~{3,})(?=[ \t]*$)/;
 const SETEXT_HEADING_LINE_RE = /^(?:=+|-+)[ \t]*$/;
-const ALLOWED_LEADING_WHITESPACE_RE = /^\s{0,3}(?=\S)/;
-const INDENTED_CODE_BLOCK_RE = /^\s{4,}(?=\S)/;
+const ALLOWED_LEADING_WHITESPACE_RE = /^ {0,3}(?=\S)/;
+const INDENTED_CODE_BLOCK_RE = /(?:(?:^ {4,})|(?:^ {0,3}\t))(?=\S)/;
+
+const TRAILING_HARD_BREAK_RE = /(?:(?: {2,})|\\)\n/;
 
 /* In MD_TEXT_NORMAL, collapse non-trivial whitespace into single ' ' */
 const FLAG_COLLAPSE_WHITESPACE = 0x0001;
@@ -65,21 +79,18 @@ const DIALECT_COMMONMARK = 0;
 const DIALECT_GITHUB =
   FLAG_PERMISSIVEAUTOLINKS | FLAG_TABLES | FLAG_STRIKETHROUGH | FLAG_TASKLISTS;
 
-interface Options {
-  unsafeHTML?: boolean;
-  gfm?: boolean;
-}
-
-function resolveFlags(opts: Options): number {
-  let flags = opts.gfm ? DIALECT_GITHUB : DIALECT_COMMONMARK;
-  if (!opts.unsafeHTML) {
-    flags = flags | FLAG_NOHTML;
-  }
-  return flags;
-}
-
 function encode(str: string) {
-	return str.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+	return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function unescape(str: string = '') {
+  let result = '';
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (c === '\\' && str[i + 1]) continue;
+    result += c;
+  }
+  return result;
 }
 
 function dedent(str: string) {
@@ -106,7 +117,7 @@ function removeLeadingPattern(input: string, re: RegExp): string {
   return output
 }
 
-function* blocks(input: string, flags: number): Generator<any[]> {
+function* blocks(input: string, flags: number, ctx: any): Generator<any[]> {
   const lines = input.split(/\r?\n/);
   let chunk = '';
   let chunkType = BLOCK_PARAGRAPH;
@@ -120,11 +131,11 @@ function* blocks(input: string, flags: number): Generator<any[]> {
         yield [BLOCK_CODE, chunk + '\n', chunkDetail[1]]
       } else if (chunkType === BLOCK_QUOTE) {
         yield [BLOCK_QUOTE, null, 1]
-        yield* blocks(removeLeadingPattern(chunk, BLOCK_QUOTE_MARKER_RE), flags);
+        yield* blocks(removeLeadingPattern(chunk, BLOCK_QUOTE_MARKER_RE), flags, ctx);
         yield [BLOCK_QUOTE, null, -1]
       } else if (chunkType === BLOCK_LIST_ORDERED || chunkType === BLOCK_LIST_UNORDERED) {
         yield [chunkType, null, 1]
-        for (const block of blocks(removeLeadingPattern(dedent(chunk), chunkType === BLOCK_LIST_ORDERED ? ORDERED_LIST_MARKER_RE : UNORDERED_LIST_MARKER_RE), flags)) {
+        for (const block of blocks(removeLeadingPattern(dedent(chunk), chunkType === BLOCK_LIST_ORDERED ? ORDERED_LIST_MARKER_RE : UNORDERED_LIST_MARKER_RE), flags, ctx)) {
           if (block[0] === BLOCK_PARAGRAPH) {
             block[0] = BLOCK_LIST_ITEM;
           }
@@ -187,7 +198,7 @@ function* blocks(input: string, flags: number): Generator<any[]> {
       chunkType = BLOCK_QUOTE;
     } else if (chunkType === BLOCK_QUOTE && !BLOCK_QUOTE_MARKER_RE.test(line)) {
       yield* flush();
-    } else if (UNORDERED_LIST_MARKER_RE.test(trim(line, flags)) && chunkType !== BLOCK_LIST_UNORDERED) {
+    } else if (UNORDERED_LIST_MARKER_RE.test(trim(line, flags))) {
       yield* flush();
       chunkType = BLOCK_LIST_UNORDERED;
     } else if (chunkType === BLOCK_LIST_UNORDERED && !UNORDERED_LIST_MARKER_RE.test(line)) {
@@ -209,14 +220,207 @@ function* blocks(input: string, flags: number): Generator<any[]> {
   yield* flush();
 }
 
-function inlines(input: string, flags: number, ctx: any): string {
-  return encode(input);
+const SPECIAL_RE = /^[_*]/;
+const BRACES_RE = /^[\[\]]/;
+
+function isSpecial(str: string) {
+  return SPECIAL_RE.test(str) || BRACES_RE.test(str);
+}
+
+function* inlineTokenize(input: string) {
+  let sequence = '';
+
+  function* flush(c: string = '') {
+    if (sequence) yield sequence;
+    sequence = c;
+  }
+  for (let i = 0; i < input.length; i++) {
+    const c = input[i];
+    const next = input[i + 1] ?? '';
+
+    if (WHITESPACE_RE.test(c)) {
+      if (!WHITESPACE_RE.test(sequence)) {
+        yield* flush()
+      }
+      sequence += c;
+      continue;
+    }
+
+    if ((isSpecial(sequence) && !SPECIAL_RE.test(c)) || (WHITESPACE_RE.test(sequence) && !WHITESPACE_RE.test(c))) {
+      yield* flush();
+    }
+
+    switch (true) {
+      case c === '\\': {
+        if (next === '\n') {
+          yield* flush();
+        }
+        sequence += c;
+        if (next) sequence += next;
+        i++;
+        break;
+      }
+      case SPECIAL_RE.test(c) || c == '`' || /\s/.test(c):
+        if (!sequence || sequence[0] === c) {
+          sequence += c;
+        } else {
+          yield* flush(c)
+        }
+        break;
+      case BRACES_RE.test(c):
+        yield* flush();
+        yield c;
+        break;
+      case c === '!':
+        if (next === '[') {
+          yield* flush();
+          yield '!['
+          i++;
+        } else {
+          sequence += c;
+        }
+        break;
+      default:
+        sequence += c;
+        break;
+    }
+  }
+  yield sequence;
+}
+
+const modifiers: Record<string, number> = { '*': SPAN_EMPHASIS, '_': SPAN_EMPHASIS, '__': SPAN_STRONG, '**': SPAN_STRONG, '***': SPAN_STRONG_EMPHASIS, '___': SPAN_STRONG_EMPHASIS, '[': SPAN_LINK, '![': SPAN_IMAGE, '`': SPAN_CODE, '``': SPAN_CODE }
+function* inlines(input: string, flags: number, ctx: any): Generator<any[]> {
+  let tokens = Array.from(inlineTokenize(input));
+
+  let tmp: any[] = [];
+  for (let i = tokens.length - 1; i > -1; i--) {
+    const token = tokens[i];
+
+    if (TRAILING_HARD_BREAK_RE.test(token) && i < tokens.length - 1) {
+      if (tokens.slice(i + 1).length > 0) tmp.push([SPAN_TEXT, tokens.slice(i + 1).join('')]);
+      tmp.push([SPAN_HARD_LINE_BREAK]);
+      tokens = tokens.slice(0, i);
+    } else if (isSpecial(token)) {
+      const needle = token === ']' ? ['[', '!['] : [token];
+      for (let j = 0; j < i; j++) {
+        const opener = tokens[j];
+        let data: any[] = [];
+        if (token === ']') {
+          const next = tokens[i + 1];
+          if (next[0] === '(' && next[next.length - 1] === ')') {
+            const [href, title = ''] = next.slice(1, -1).split(/\s+/);
+            data = [href, title.slice(1, -1)]
+          } else {
+            continue;
+          }
+        }
+        if (needle.includes(opener)) {
+          if (tokens.slice(i + 1).length > 0) tmp.push([SPAN_TEXT, tokens.slice(i + 1).join('')]);
+
+          tmp.push([modifiers[opener], [...tokens.slice(j + 1, i)].join(''), data])
+          tokens = tokens.slice(0, j);
+          i = j;
+        }
+        //  else if (opener.endsWith(token)) {
+        //   tmp.push([modifiers[token], opener.slice(0, token.length * -1) + tokens.slice(j + 1, i).join(''), data])
+        //   tokens = tokens.slice(0, j);
+        //   i = j;
+        // }
+      }
+    } else if (token[0] === '<') {
+      tmp.push([SPAN_HTML, token]);
+      tokens = tokens.slice(0, i);
+    }
+  }
+
+  const text = tokens.join('');
+  if (text) tmp.push([SPAN_TEXT, text])
+
+  for (const buffer of tmp.reverse()) {
+    const [inline, text, ctx] = buffer;
+    if (inline === SPAN_HARD_LINE_BREAK) {
+      yield [inline];
+    } else if (inline === SPAN_HTML) {
+      yield [inline, text, ctx];
+    } else {
+      yield [inline, encode(text), ctx];
+    }
+  }
+}
+
+interface Options {
+  mode?: 'default' | 'inline';
+  unsafeHTML?: boolean;
+  gfm?: boolean;
+}
+
+function resolveFlags(opts: Options): number {
+  let flags = opts.gfm ? DIALECT_GITHUB : DIALECT_COMMONMARK;
+  if (!opts.unsafeHTML) {
+    flags = flags | FLAG_NOHTML;
+  }
+  return flags;
+}
+
+function parseInline(input: string, opts: Options = {}) {
+  const flags = resolveFlags(opts);
+  let result = ''
+
+  for (const [inline, text, detail] of inlines(input, flags, {})) {
+    switch (inline) {
+      case SPAN_CODE: {
+        result += `<code>${text}</code>`;
+        break;
+      }
+      case SPAN_EMPHASIS: {
+        result += `<em>${text}</em>`;
+        break;
+      }
+      case SPAN_STRONG: {
+        result += `<strong>${text}</strong>`;
+        break;
+      }
+      case SPAN_STRONG_EMPHASIS: {
+        result += `<em><strong>${text}</strong></em>`;
+        break;
+      }
+      case SPAN_LINK: {
+        result += `<a href="${detail[0]}"${detail[1] ? ` title="${detail[1]}"` : ''}>${text}</a>`;
+        break;
+      }
+      case SPAN_IMAGE: {
+        result += `<img src="${detail[0]}"${text ? ` alt="${text}"` : ''}${detail[1] ? ` title="${detail[1]}"` : ''} />`;
+        break;
+      }
+      case SPAN_AUTOLINK: {
+        result += `<a href="${text}">${text}</a>`;
+        break;
+      }
+      case SPAN_TEXT: {
+        result += unescape(text);
+        break;
+      }
+      case SPAN_HTML: {
+        result += text;
+        break;
+      }
+      case SPAN_HARD_LINE_BREAK: {
+        result += `<br />\n`;
+        break;
+      }
+    }
+  }
+
+  return result;
 }
 
 export function parse(input: string, opts: Options = {}) {
+  if (opts.mode === 'inline') return parseInline(input, opts);
+
   const flags = resolveFlags(opts);
   let result = ''
-  for (const [block, children, detail] of blocks(input, flags)) {
+  const ctx: any = {};
+  for (const [block, children, detail] of blocks(input, flags, ctx)) {
     switch (block) {
       case BLOCK_QUOTE: {
         result += `<${detail === 1 ? '' : '/'}blockquote>`;
@@ -239,20 +443,23 @@ export function parse(input: string, opts: Options = {}) {
         break;
       }
       case BLOCK_HEADING: {
-        result += `<h${detail}>${inlines(children, flags, {})}</h${detail}>`;
+        result += `<h${detail}>${parseInline(children, opts)}</h${detail}>`;
         break;
       }
       case BLOCK_PARAGRAPH: {
-        result += `<p>${inlines(children, flags, {})}</p>`;
+        result += `<p>${parseInline(children, opts)}</p>`;
         break;
       }
       case BLOCK_CODE: {
-        const lang = detail;
-        result += `<pre><code${lang ? ` class="language-${lang}"` : ''}>${inlines(children, flags, {})}</code></pre>`
+        const lang = unescape(detail);
+        result += `<pre><code${lang ? ` class="language-${lang}"` : ''}>${children}</code></pre>`
         break;
       }
     }
-    if (block) result += '\n';
+    if (block) {
+      result += '\n';
+      ctx.prev = block;
+    }
   }
   return result;
 }
