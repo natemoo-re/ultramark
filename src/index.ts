@@ -1,13 +1,3 @@
-// Internal
-const RAW = -1;
-const EMAIL_AUTOLINK_RE = /^<([a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*)>/;
-const AUTOLINK_RE = /^<[A-Za-z][A-Za-z0-9.+-]{1,31}:[^<>\x00-\x20]*>/i;
-const DOM_PARSER_RE =
-  /(?:<(\/?)([!?a-zA-Z][a-zA-Z0-9\:-]*)(?:\s([^>]*?))?((?:\s*\/)?)>|(<\!\-\-)([\s\S]*?)(\-\->)|(<\!)([\s\S]*?)(>))/gm;
-const isHTML = (str: string) => {
-  DOM_PARSER_RE.lastIndex = 0;
-  return DOM_PARSER_RE.test(str);
-}
 // (4) Leaf Blocks
 const BLOCK_THEMATIC_BREAK = 41;
 const BLOCK_HEADING = 42;
@@ -49,6 +39,16 @@ const CLOSING_CODE_FENCE_RE = /^(?:`{3,}|~{3,})(?=[ \t]*$)/;
 const SETEXT_HEADING_LINE_RE = /^(?:=+|-+)[ \t]*$/;
 const ALLOWED_LEADING_WHITESPACE_RE = /^ {0,3}(?=\S)/;
 const INDENTED_CODE_BLOCK_RE = /(?:(?:^ {4,})|(?:^ {0,3}\t))(?=\S)/;
+const BLANK_EMPHASIS_RE = /^[\s_*]+$/;
+
+const EMAIL_AUTOLINK_RE = /^<([a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*)>/;
+const AUTOLINK_RE = /^<[A-Za-z][A-Za-z0-9.+-]{1,31}:[^<>\x00-\x20]*>/i;
+const DOM_PARSER_RE =
+  /(?:<(\/?)([!?a-zA-Z][a-zA-Z0-9\:-]*)(?:\s([^>]*?))?((?:\s*\/)?)>|(<\!\-\-)([\s\S]*?)(\-\->)|(<\!)([\s\S]*?)(>))/gm;
+const isHTML = (str: string) => {
+  DOM_PARSER_RE.lastIndex = 0;
+  return DOM_PARSER_RE.test(str);
+}
 
 const TRAILING_HARD_BREAK_RE = /(?:(?: {2,})|\\)\n/;
 
@@ -124,7 +124,7 @@ function extractLinkDefinition(inline: string): string[] {
   inline = inline.slice(1, -1);
   const [href, ...title] = inline.split(/\s+/);
 
-  return [href, title.join(' ').slice(1, -1)];
+  return [href.replace(/(^<|>$)/g, ''), title.join(' ').slice(1, -1)];
 }
 function extractCodeSpan(inline: string): string {
   if (BLANK_RE.test(inline)) return inline;
@@ -410,7 +410,7 @@ function* inlines(input: string, opts: Options): Generator<any[]> {
 
     if (token === '[' || token === '![') {
       const needle = [']'];
-      for (let j = tokens.length - 1; j > i; j--) {
+      for (let j = i + 1; j < tokens.length; j++) {
         const closer = tokens[j];
         for (const n of needle) {
           if (closer === n) {
@@ -451,6 +451,10 @@ function* inlines(input: string, opts: Options): Generator<any[]> {
         for (const n of needle) {
           if (opener === n) {
             const text = tokens.slice(i + 1, j).join('');
+            if (text.length === 0 || BLANK_EMPHASIS_RE.test(text)) {
+              yield [SPAN_TEXT, token];
+              continue outer;
+            }
             yield [modifiers[opener], text, []];
             i = j;
             continue outer;
@@ -490,9 +494,6 @@ function parseInline(input: string, opts: Options, ctx: any) {
 
   for (let [inline, text, detail] of inlines(input, opts)) {
     switch (inline) {
-      case RAW: {
-        result += parseInline(inline, opts, ctx);
-      }
       case SPAN_CODE: {
         result += `<code>${text}</code>`;
         break;
@@ -506,7 +507,7 @@ function parseInline(input: string, opts: Options, ctx: any) {
         break;
       }
       case SPAN_LINK: {
-        if (!detail[0]) detail = ctx.refs.find((ref: any[]) => ref[0] === text || ref[0] === detail[2]) ?? []
+        if (!detail[0]) detail = ctx.refs.find((ref: any[]) => ref[0].toLowerCase() === text.toLowerCase() || ref[0].toLowerCase() === detail[2].toLowerCase()) ?? []
         if (detail[0]) {
           result += `<a href="${detail[0]}"${detail[1] ? ` title="${detail[1]}"` : ''}>${parseInline(text, opts, ctx)}</a>`;
         } else {
@@ -515,8 +516,8 @@ function parseInline(input: string, opts: Options, ctx: any) {
         break;
       }
       case SPAN_IMAGE: {
-        console.log({ detail });
-        result += `<img src="${detail[0]}"${text ? ` alt="${text}"` : ''}${detail[1] ? ` title="${detail[1]}"` : ''} />`;
+        if (!detail[0]) detail = ctx.refs.find((ref: any[]) => ref[0].toLowerCase() === text.toLowerCase() || ref[0].toLowerCase() === detail[2].toLowerCase())?.slice(1) ?? [];
+        result += `<img src="${detail[0]}"${typeof text !== 'undefined' ? ` alt="${text.replace(/[*_\[\]]|!\[|(\([^(]+\))/g, '')}"` : ''}${detail[1] ? ` title="${encode(detail[1])}"` : ''} />`;
         break;
       }
       case SPAN_AUTOLINK: {
@@ -578,7 +579,7 @@ export function parse(input: string, opts: Options = {}) {
         break;
       }
       case BLOCK_PARAGRAPH: {
-        result += `<p>${parseInline(children, opts, ctx)}</p>`;
+        result += `<p>${parseInline(children, opts, ctx).replace(/^\s+/gm, '')}</p>`;
         break;
       }
       case BLOCK_CODE: {
