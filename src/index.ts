@@ -1,3 +1,8 @@
+// Internal
+const RAW = -1;
+const DOM_PARSER_RE =
+  /(?:<(\/?)([!?a-zA-Z][a-zA-Z0-9\:-]*)(?:\s([^>]*?))?((?:\s*\/)?)>|(<\!\-\-)([\s\S]*?)(\-\->)|(<\!)([\s\S]*?)(>))/gm;
+
 // (4) Leaf Blocks
 const BLOCK_THEMATIC_BREAK = 41;
 const BLOCK_HEADING = 42;
@@ -25,11 +30,13 @@ const SPAN_TEXT = 69;
 
 const THEMATIC_BREAK_RE =
   /^(?:\*[ \t]*){3,}$|^(?:_[ \t]*){3,}$|^(?:-[ \t]*){3,}$/;
-const BLOCK_QUOTE_MARKER_RE = /^[ \t]{0,3}\>/;
+const BLOCK_QUOTE_MARKER_RE = /^ {0,3}\>/;
 const UNORDERED_LIST_MARKER_RE = /^[*+-]\s+/;
 const ORDERED_LIST_MARKER_RE = /^(\d{1,9})([.)])/;
+const LINK_REFERENCE_RE = /^\[[^\[]+\]:/;
 
 const WHITESPACE_RE = /[ \t\f\v\r\n]/;
+const BLANK_RE = /^[ \t\f\v\r\n]+$/;
 
 const ATX_HEADING_MARKER_RE = /^#{1,6}(?:[ \t]+|$)/;
 const CODE_FENCE_RE = /(^`{3,}(?!.*`)|^~{3,})/;
@@ -105,6 +112,74 @@ function trim(line: string, flags: number) {
 function extractATXHeading(line: string): [string, number] {
   const [marker] = ATX_HEADING_MARKER_RE.exec(line) ?? ['#'];
   return [line.slice(marker.length).replace(/^[ \t]*#+[ \t]*$/, "").replace(/[ \t]+#+[ \t]*$/, "").trim(), marker.trim().length];
+}
+function extractLinkDefinition(inline: string): string[] {
+  if (inline[0] === '[') return ['', '', inline.slice(1, -1)];
+  if (inline[0] !== '(') return [inline];
+  inline = inline.slice(1, -1);
+  const [href, ...title] = inline.split(/\s+/);
+
+  return [href, title.join(' ').slice(1, -1)];
+}
+function extractCodeSpan(inline: string): string {
+  if (BLANK_RE.test(inline)) return inline;
+  inline = inline.replace(/\n/g, ' ');
+  if (inline.length > 1 && inline[0] === ' ' && inline[inline.length - 1] === ' ') return inline.slice(1, -1);
+  return inline;
+}
+
+function extractLinkReferences(lines: string): any[] {
+  let references: any[] = [];
+  let buf = '';
+  for (let i = 0; i < lines.length; i++) {
+    const c = lines[i];
+    const item = references.length > 0 ? references[references.length - 1] : [];
+    if (c === '\\') {
+      buf += c + lines[i + 1];
+      i++;
+      continue;
+    }
+    if (c === '[') {
+      if (item.length === 2 && buf) {
+        // TODO: fix slice here
+        item.push(buf.trim().slice(1, -1));
+        buf = '';
+      }
+      references.push([]);
+      continue;
+    }
+    if (c === ']' && lines[i + 1] === ':') {
+      item.push(buf);
+      i++;
+      continue;
+    }
+    if (item.length === 1) {
+      if (buf[0] === '<' && c === '>') {
+        item.push(buf.slice(1));
+        buf = '';
+        continue;
+      }
+      if (WHITESPACE_RE.test(c)) {
+        if (buf === item[0]) {
+          buf = '';
+          continue;
+        } else if (buf[0] !== '<') {
+          item.push(buf);
+          buf = '';
+          continue;
+        }
+      } 
+    }
+
+    buf += c;
+  }
+  const item = references[references.length - 1];
+  if (item.length === 2 && buf) {
+    // TODO: fix slice here
+    item.push(buf.trim().slice(1, -1));
+    buf = '';
+  }
+  return references;
 }
 
 function removeLeadingPattern(input: string, re: RegExp): string {
@@ -208,11 +283,12 @@ function* blocks(input: string, flags: number, ctx: any): Generator<any[]> {
       chunkType = BLOCK_LIST_ORDERED;
     } else if (chunkType === BLOCK_LIST_ORDERED && !ORDERED_LIST_MARKER_RE.test(line)) {
       yield* flush();
+    } else if (LINK_REFERENCE_RE.test(line)) {
+      chunkType = BLOCK_LINK_REFERENCE;
     }
     
     if (chunk != '') {
       chunk += '\n';
-      if (chunkType !== BLOCK_CODE) line = line.trim();
     }
     chunk += line;
   }
@@ -220,7 +296,7 @@ function* blocks(input: string, flags: number, ctx: any): Generator<any[]> {
   yield* flush();
 }
 
-const SPECIAL_RE = /^[_*]/;
+const SPECIAL_RE = /^[_*`]/;
 const BRACES_RE = /^[\[\]]/;
 
 function isSpecial(str: string) {
@@ -238,6 +314,14 @@ function* inlineTokenize(input: string) {
     const c = input[i];
     const next = input[i + 1] ?? '';
 
+    if (c === '<' && DOM_PARSER_RE.test(input.slice(i))) {
+      yield* flush();
+      const text = input.slice(i);
+      yield text;
+      i += text.length;
+      continue;
+    }
+
     if (WHITESPACE_RE.test(c)) {
       if (!WHITESPACE_RE.test(sequence)) {
         yield* flush()
@@ -246,12 +330,16 @@ function* inlineTokenize(input: string) {
       continue;
     }
 
-    if ((isSpecial(sequence) && !SPECIAL_RE.test(c)) || (WHITESPACE_RE.test(sequence) && !WHITESPACE_RE.test(c))) {
+    if ((isSpecial(sequence) && ((sequence[0] !== '`' && sequence.length === 2) || !SPECIAL_RE.test(c))) || (WHITESPACE_RE.test(sequence) && !WHITESPACE_RE.test(c))) {
       yield* flush();
     }
 
     switch (true) {
       case c === '\\': {
+        if (next === '`') {
+          sequence += c;
+          continue;
+        }
         if (next === '\n') {
           yield* flush();
         }
@@ -260,7 +348,7 @@ function* inlineTokenize(input: string) {
         i++;
         break;
       }
-      case SPECIAL_RE.test(c) || c == '`' || /\s/.test(c):
+      case SPECIAL_RE.test(c):
         if (!sequence || sequence[0] === c) {
           sequence += c;
         } else {
@@ -289,61 +377,89 @@ function* inlineTokenize(input: string) {
 }
 
 const modifiers: Record<string, number> = { '*': SPAN_EMPHASIS, '_': SPAN_EMPHASIS, '__': SPAN_STRONG, '**': SPAN_STRONG, '***': SPAN_STRONG_EMPHASIS, '___': SPAN_STRONG_EMPHASIS, '[': SPAN_LINK, '![': SPAN_IMAGE, '`': SPAN_CODE, '``': SPAN_CODE }
-function* inlines(input: string, flags: number, ctx: any): Generator<any[]> {
+function needles(token: string) {
+  if (token === '[' || token === '![') return [']'];
+  if (token[0] === '`') return [token];
+  if (token.length === 2) return [token, token[0]];
+  return [token]
+}
+function* inlines(input: string, opts: Options): Generator<any[]> {
   let tokens = Array.from(inlineTokenize(input));
 
-  let tmp: any[] = [];
-  for (let i = tokens.length - 1; i > -1; i--) {
+  outer: for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
 
-    if (TRAILING_HARD_BREAK_RE.test(token) && i < tokens.length - 1) {
-      if (tokens.slice(i + 1).length > 0) tmp.push([SPAN_TEXT, tokens.slice(i + 1).join('')]);
-      tmp.push([SPAN_HARD_LINE_BREAK]);
-      tokens = tokens.slice(0, i);
-    } else if (isSpecial(token)) {
-      const needle = token === ']' ? ['[', '!['] : [token];
-      for (let j = 0; j < i; j++) {
-        const opener = tokens[j];
-        let data: any[] = [];
-        if (token === ']') {
-          const next = tokens[i + 1];
-          if (next[0] === '(' && next[next.length - 1] === ')') {
-            const [href, title = ''] = next.slice(1, -1).split(/\s+/);
-            data = [href, title.slice(1, -1)]
-          } else {
-            continue;
+    if (token[0] === '`') {
+      const needle = needles(token);
+      for (let j = i + 1; j < tokens.length; j++) {
+        const closer = tokens[j];
+        for (const n of needle) {
+          if (closer === n) {
+            yield [SPAN_CODE, extractCodeSpan(tokens.slice(i + 1, j).join(''))];
+            i = j;
+            continue outer;
           }
         }
-        if (needle.includes(opener)) {
-          if (tokens.slice(i + 1).length > 0) tmp.push([SPAN_TEXT, tokens.slice(i + 1).join('')]);
-
-          tmp.push([modifiers[opener], [...tokens.slice(j + 1, i)].join(''), data])
-          tokens = tokens.slice(0, j);
-          i = j;
-        }
-        //  else if (opener.endsWith(token)) {
-        //   tmp.push([modifiers[token], opener.slice(0, token.length * -1) + tokens.slice(j + 1, i).join(''), data])
-        //   tokens = tokens.slice(0, j);
-        //   i = j;
-        // }
       }
-    } else if (token[0] === '<') {
-      tmp.push([SPAN_HTML, token]);
-      tokens = tokens.slice(0, i);
     }
-  }
 
-  const text = tokens.join('');
-  if (text) tmp.push([SPAN_TEXT, text])
+    if (token === '[' || token === '![') {
+      const needle = [']'];
+      for (let j = tokens.length - 1; j > i; j--) {
+        const closer = tokens[j];
+        for (const n of needle) {
+          if (closer === n) {
+            const text = tokens.slice(i + 1, j).join('');
+            let tail = tokens.slice(j + 1);
 
-  for (const buffer of tmp.reverse()) {
-    const [inline, text, ctx] = buffer;
-    if (inline === SPAN_HARD_LINE_BREAK) {
-      yield [inline];
-    } else if (inline === SPAN_HTML) {
-      yield [inline, text, ctx];
+            if (tail[0][0] === '(') {
+              const k = tail.findIndex(value => value.endsWith(')'));
+              tail = tail.slice(0, k + 1);
+            } else if (tail[0][0] === '[') {
+              const k = tail.findIndex(value => value.endsWith(']'));
+              tail = tail.slice(0, k + 1);
+            } else {
+              tail = [];
+            }
+
+            yield [modifiers[token], text, extractLinkDefinition(tail.join(''))];
+            i = j;
+            i += tail.length;
+            continue outer;
+          }
+        }
+      }
+    }
+
+    if (isSpecial(token)) {
+      const needle = needles(token);
+      for (let j = tokens.length - 1; j > i; j--) {
+        const opener = tokens[j];
+        if (opener[0] === '`') {
+          yield [SPAN_TEXT, token]
+          continue outer;
+        }
+        if (opener[0] === '[' || opener[0] === '![') {
+          yield [SPAN_TEXT, token]
+          continue outer;
+        }
+        for (const n of needle) {
+          if (opener === n) {
+            const text = tokens.slice(i + 1, j).join('');
+            yield [modifiers[opener], text, []];
+            i = j;
+            continue outer;
+          }
+        }
+      }
+    }
+
+    if (DOM_PARSER_RE.test(token)) {
+      yield [SPAN_HTML, token]
+    } else if (TRAILING_HARD_BREAK_RE.test(token)) {
+      yield [SPAN_HARD_LINE_BREAK];
     } else {
-      yield [inline, encode(text), ctx];
+      yield [SPAN_TEXT, token]
     }
   }
 }
@@ -362,33 +478,37 @@ function resolveFlags(opts: Options): number {
   return flags;
 }
 
-function parseInline(input: string, opts: Options = {}) {
-  const flags = resolveFlags(opts);
+function parseInline(input: string, opts: Options, ctx: any) {
   let result = ''
 
-  for (const [inline, text, detail] of inlines(input, flags, {})) {
+  for (let [inline, text, detail] of inlines(input, opts)) {
     switch (inline) {
+      case RAW: {
+        result += parseInline(inline, opts, ctx);
+      }
       case SPAN_CODE: {
         result += `<code>${text}</code>`;
         break;
       }
       case SPAN_EMPHASIS: {
-        result += `<em>${text}</em>`;
+        result += `<em>${parseInline(text, opts, ctx)}</em>`;
         break;
       }
       case SPAN_STRONG: {
-        result += `<strong>${text}</strong>`;
-        break;
-      }
-      case SPAN_STRONG_EMPHASIS: {
-        result += `<em><strong>${text}</strong></em>`;
+        result += `<strong>${parseInline(text, opts, ctx)}</strong>`;
         break;
       }
       case SPAN_LINK: {
-        result += `<a href="${detail[0]}"${detail[1] ? ` title="${detail[1]}"` : ''}>${text}</a>`;
+        if (!detail[0]) detail = ctx.refs.find((ref: any[]) => ref[0] === text || ref[0] === detail[2]) ?? []
+        if (detail[0]) {
+          result += `<a href="${detail[0]}"${detail[1] ? ` title="${detail[1]}"` : ''}>${parseInline(text, opts, ctx)}</a>`;
+        } else {
+          result += `[${encode(unescape(text))}]`;
+        }
         break;
       }
       case SPAN_IMAGE: {
+        console.log({ detail });
         result += `<img src="${detail[0]}"${text ? ` alt="${text}"` : ''}${detail[1] ? ` title="${detail[1]}"` : ''} />`;
         break;
       }
@@ -397,7 +517,7 @@ function parseInline(input: string, opts: Options = {}) {
         break;
       }
       case SPAN_TEXT: {
-        result += unescape(text);
+        result += encode(unescape(text));
         break;
       }
       case SPAN_HTML: {
@@ -415,12 +535,16 @@ function parseInline(input: string, opts: Options = {}) {
 }
 
 export function parse(input: string, opts: Options = {}) {
-  if (opts.mode === 'inline') return parseInline(input, opts);
+  if (opts.mode === 'inline') return parseInline(input, opts, {});
 
   const flags = resolveFlags(opts);
+  const _blocks = Array.from(blocks(input, flags, {}));
+
+  const refs = _blocks.filter(b => b[0] === BLOCK_LINK_REFERENCE).map(b => extractLinkReferences(b[1])).flat(1);
+  const content = _blocks.filter(b => b[0] !== BLOCK_LINK_REFERENCE);
   let result = ''
-  const ctx: any = {};
-  for (const [block, children, detail] of blocks(input, flags, ctx)) {
+  const ctx: any = { refs };
+  for (const [block, children, detail] of content) {
     switch (block) {
       case BLOCK_QUOTE: {
         result += `<${detail === 1 ? '' : '/'}blockquote>`;
@@ -443,11 +567,11 @@ export function parse(input: string, opts: Options = {}) {
         break;
       }
       case BLOCK_HEADING: {
-        result += `<h${detail}>${parseInline(children, opts)}</h${detail}>`;
+        result += `<h${detail}>${parseInline(children, opts, ctx)}</h${detail}>`;
         break;
       }
       case BLOCK_PARAGRAPH: {
-        result += `<p>${parseInline(children, opts)}</p>`;
+        result += `<p>${parseInline(children, opts, ctx)}</p>`;
         break;
       }
       case BLOCK_CODE: {
@@ -458,7 +582,6 @@ export function parse(input: string, opts: Options = {}) {
     }
     if (block) {
       result += '\n';
-      ctx.prev = block;
     }
   }
   return result;

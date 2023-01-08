@@ -2656,8 +2656,8 @@
     "section": "Code spans"
   },
   {
-    "markdown": "` b `\n",
-    "html": "<p><code> b </code></p>\n",
+    "markdown": "`\tb\t`\n",
+    "html": "<p><code>\tb\t</code></p>\n",
     "example": 333,
     "start_line": 5937,
     "end_line": 5941,
