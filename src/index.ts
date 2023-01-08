@@ -2,7 +2,10 @@
 const RAW = -1;
 const DOM_PARSER_RE =
   /(?:<(\/?)([!?a-zA-Z][a-zA-Z0-9\:-]*)(?:\s([^>]*?))?((?:\s*\/)?)>|(<\!\-\-)([\s\S]*?)(\-\->)|(<\!)([\s\S]*?)(>))/gm;
-
+const isHTML = (str: string) => {
+  DOM_PARSER_RE.lastIndex = 0;
+  return DOM_PARSER_RE.test(str);
+}
 // (4) Leaf Blocks
 const BLOCK_THEMATIC_BREAK = 41;
 const BLOCK_HEADING = 42;
@@ -314,7 +317,7 @@ function* inlineTokenize(input: string) {
     const c = input[i];
     const next = input[i + 1] ?? '';
 
-    if (c === '<' && DOM_PARSER_RE.test(input.slice(i))) {
+    if (c === '<' && isHTML(input.slice(i))) {
       yield* flush();
       const text = input.slice(i);
       yield text;
@@ -454,7 +457,7 @@ function* inlines(input: string, opts: Options): Generator<any[]> {
       }
     }
 
-    if (DOM_PARSER_RE.test(token)) {
+    if (isHTML(token)) {
       yield [SPAN_HTML, token]
     } else if (TRAILING_HARD_BREAK_RE.test(token)) {
       yield [SPAN_HARD_LINE_BREAK];
