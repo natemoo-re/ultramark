@@ -1,57 +1,3 @@
-// (4) Leaf Blocks
-const BLOCK_THEMATIC_BREAK = 41;
-const BLOCK_HEADING = 42;
-const BLOCK_CODE = 45;
-const BLOCK_HTML = 46;
-const BLOCK_LINK_REFERENCE = 47;
-const BLOCK_PARAGRAPH = 48;
-// (5) Container Blocks
-const BLOCK_QUOTE = 51;
-const BLOCK_LIST_ITEM = 52;
-const BLOCK_LIST_UNORDERED = 530;
-const BLOCK_LIST_ORDERED = 531;
-// (6) Inlines
-const SPAN_CODE = 61;
-const SPAN_EMPHASIS = 620;
-const SPAN_STRONG = 621;
-const SPAN_STRONG_EMPHASIS = 622;
-const SPAN_LINK = 63;
-const SPAN_IMAGE = 64;
-const SPAN_AUTOLINK = 65;
-const SPAN_HTML = 66;
-const SPAN_HARD_LINE_BREAK = 67;
-const SPAN_SOFT_LINE_BREAK = 68;
-const SPAN_TEXT = 69;
-
-const THEMATIC_BREAK_RE =
-  /^(?:\*[ \t]*){3,}$|^(?:_[ \t]*){3,}$|^(?:-[ \t]*){3,}$/;
-const BLOCK_QUOTE_MARKER_RE = /^ {0,3}\>/;
-const UNORDERED_LIST_MARKER_RE = /^[*+-]\s+/;
-const ORDERED_LIST_MARKER_RE = /^(\d{1,9})([.)])/;
-const LINK_REFERENCE_RE = /^\[[^\[]+\]:/;
-
-const WHITESPACE_RE = /[ \t\f\v\r\n]/;
-const BLANK_RE = /^[ \t\f\v\r\n]+$/;
-
-const ATX_HEADING_MARKER_RE = /^#{1,6}(?:[ \t]+|$)/;
-const CODE_FENCE_RE = /(^`{3,}(?!.*`)|^~{3,})/;
-const CLOSING_CODE_FENCE_RE = /^(?:`{3,}|~{3,})(?=[ \t]*$)/;
-const SETEXT_HEADING_LINE_RE = /^(?:=+|-+)[ \t]*$/;
-const ALLOWED_LEADING_WHITESPACE_RE = /^ {0,3}(?=\S)/;
-const INDENTED_CODE_BLOCK_RE = /(?:(?:^ {4,})|(?:^ {0,3}\t))(?=\S)/;
-const BLANK_EMPHASIS_RE = /^[\s_*]+$/;
-
-const EMAIL_AUTOLINK_RE = /^<([a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*)>/;
-const AUTOLINK_RE = /^<[A-Za-z][A-Za-z0-9.+-]{1,31}:[^<>\x00-\x20]*>/i;
-const DOM_PARSER_RE =
-  /(?:<(\/?)([!?a-zA-Z][a-zA-Z0-9\:-]*)(?:\s([^>]*?))?((?:\s*\/)?)>|(<\!\-\-)([\s\S]*?)(\-\->)|(<\!)([\s\S]*?)(>))/gm;
-const isHTML = (str: string) => {
-  DOM_PARSER_RE.lastIndex = 0;
-  return DOM_PARSER_RE.test(str);
-}
-
-const TRAILING_HARD_BREAK_RE = /(?:(?: {2,})|\\)\n/;
-
 /* In MD_TEXT_NORMAL, collapse non-trivial whitespace into single ' ' */
 const FLAG_COLLAPSE_WHITESPACE = 0x0001;
 /* Do not require space in ATX headers ( ###header ) */
@@ -91,506 +37,162 @@ const DIALECT_COMMONMARK = 0;
 const DIALECT_GITHUB =
   FLAG_PERMISSIVEAUTOLINKS | FLAG_TABLES | FLAG_STRIKETHROUGH | FLAG_TASKLISTS;
 
-function encode(str: string) {
-	return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const isTokenAsterisk = (c: string) => c === '*';
+const isTokenUnderline = (c: string) => c === '_';
+const isTokenBackslash = (c: string) => c === '\\';
+const isTokenDash = (c: string) => c === '-';
+const isTokenEquals = (c: string) => c === '=';
+const isTokenTilde = (c: string) => c === '~';
+const isTokenPipe = (c: string) => c === '|';
+const isTokenColon = (c: string) => c === ':';
+const isTokenBacktick = (c: string) => c === '`';
+const isTokenHash = (c: string) => c === '#';
+const isTokenGreaterThan = (c: string) => c === '>';
+const isTokenLessThan = (c: string) => c === '<';
+const isTokenOpenBrace = (c: string) => c === '[';
+const isTokenCloseBrace = (c: string) => c === ']';
+const isTokenWhitespace = (c: string) => /^[ \t\f\v]/.test(c);
+const isTokenLineEnding = (c: string) => /^[\r\n]/.test(c);
+const isTokenAny = (_: string) => true;
+
+const TOKEN = {
+  '*': isTokenAsterisk,
+  '_': isTokenUnderline,
+  '\\': isTokenBackslash,
+  '-': isTokenDash,
+  '=': isTokenEquals,
+  '~': isTokenTilde,
+  '|': isTokenPipe,
+  ':': isTokenColon,
+  '`': isTokenBacktick,
+  '#': isTokenHash,
+  '>': isTokenGreaterThan,
+  '<': isTokenLessThan,
+  '[': isTokenOpenBrace,
+  ']': isTokenCloseBrace,
+  ' ': isTokenWhitespace,
+  '\t': isTokenWhitespace,
+  '\f': isTokenWhitespace,
+  '\v': isTokenWhitespace,
+  '\r': isTokenLineEnding,
+  '\n': isTokenLineEnding,
 }
 
-function unescape(str: string = '') {
-  let result = '';
-  for (let i = 0; i < str.length; i++) {
-    const c = str[i];
-    if (c === '\\' && str[i + 1]) continue;
-    result += c;
-  }
-  return result;
-}
+const INLINE_TOKENS = new Set([isTokenAsterisk, isTokenUnderline, isTokenTilde, isTokenBacktick, isTokenOpenBrace, isTokenBackslash])
 
-function dedent(str: string) {
-	return str.replace(RegExp('^'+(str.match(/^(\t| )+/) || '')[0], 'gm'), '');
-}
+type Token = [string, (c: string) => boolean]
+function tokenize(input: string, opts: Options): Block[] {
+  let p = -1;
+  let prevTokenType: ((c: string) => boolean) = () => true;
+  let blocks: Block[] = [];
 
-function trim(line: string, flags: number) {
-  if (flags & FLAG_NO_INDENTED_CODE_BLOCKS) return line.trimStart();
-  return line.replace(ALLOWED_LEADING_WHITESPACE_RE, '');
-}
-
-function extractATXHeading(line: string): [string, number] {
-  const [marker] = ATX_HEADING_MARKER_RE.exec(line) ?? ['#'];
-  return [line.slice(marker.length).replace(/^[ \t]*#+[ \t]*$/, "").replace(/[ \t]+#+[ \t]*$/, "").trim(), marker.trim().length];
-}
-function extractLinkDefinition(inline: string): string[] {
-  if (inline[0] === '[') return ['', '', inline.slice(1, -1)];
-  if (inline[0] !== '(') return [inline];
-  inline = inline.slice(1, -1);
-  const [href, ...title] = inline.split(/\s+/);
-
-  return [href.replace(/(^<|>$)/g, ''), title.join(' ').slice(1, -1)];
-}
-function extractCodeSpan(inline: string): string {
-  if (BLANK_RE.test(inline)) return inline;
-  inline = inline.replace(/\n/g, ' ');
-  if (inline.length > 1 && inline[0] === ' ' && inline[inline.length - 1] === ' ') return inline.slice(1, -1);
-  return inline;
-}
-
-function extractLinkReferences(lines: string): any[] {
-  let references: any[] = [];
-  let buf = '';
-  for (let i = 0; i < lines.length; i++) {
-    const c = lines[i];
-    const item = references.length > 0 ? references[references.length - 1] : [];
-    if (c === '\\') {
-      buf += c + lines[i + 1];
-      i++;
-      continue;
-    }
-    if (c === '[') {
-      if (item.length === 2 && buf) {
-        // TODO: fix slice here
-        item.push(buf.trim().slice(1, -1));
-        buf = '';
-      }
-      references.push([]);
-      continue;
-    }
-    if (c === ']' && lines[i + 1] === ':') {
-      item.push(buf);
-      i++;
-      continue;
-    }
-    if (item.length === 1) {
-      if (buf[0] === '<' && c === '>') {
-        item.push(buf.slice(1));
-        buf = '';
-        continue;
-      }
-      if (WHITESPACE_RE.test(c)) {
-        if (buf === item[0]) {
-          buf = '';
-          continue;
-        } else if (buf[0] !== '<') {
-          item.push(buf);
-          buf = '';
-          continue;
-        }
-      } 
-    }
-
-    buf += c;
-  }
-  const item = references[references.length - 1];
-  if (item.length === 2 && buf) {
-    // TODO: fix slice here
-    item.push(buf.trim().slice(1, -1));
-    buf = '';
-  }
-  return references;
-}
-
-function removeLeadingPattern(input: string, re: RegExp): string {
-  const lines = input.split(/\r?\n/);
-  let output = '';
-  for (const line of lines) {
-    output += line.replace(re, '');
-    output += '\n';
-  }
-  return output
-}
-
-function* blocks(input: string, flags: number, ctx: any): Generator<any[]> {
-  const lines = input.split(/\r?\n/);
-  let chunk = '';
-  let chunkType = BLOCK_PARAGRAPH;
-  let chunkDetail: any[] = [];
-
-  function* flush(): Generator<any[]> {
-    if (chunk) {
-      if (INDENTED_CODE_BLOCK_RE.test(chunk)) {
-        yield [BLOCK_CODE, chunk.trimStart() + '\n'];
-      } else if (chunkType === BLOCK_CODE) {
-        yield [BLOCK_CODE, chunk + '\n', chunkDetail[1]]
-      } else if (chunkType === BLOCK_QUOTE) {
-        yield [BLOCK_QUOTE, null, 1]
-        yield* blocks(removeLeadingPattern(chunk, BLOCK_QUOTE_MARKER_RE), flags, ctx);
-        yield [BLOCK_QUOTE, null, -1]
-      } else if (chunkType === BLOCK_LIST_ORDERED || chunkType === BLOCK_LIST_UNORDERED) {
-        yield [chunkType, null, 1]
-        for (const block of blocks(removeLeadingPattern(dedent(chunk), chunkType === BLOCK_LIST_ORDERED ? ORDERED_LIST_MARKER_RE : UNORDERED_LIST_MARKER_RE), flags, ctx)) {
-          if (block[0] === BLOCK_PARAGRAPH) {
-            block[0] = BLOCK_LIST_ITEM;
-          }
-          yield block;
-        }
-        yield [chunkType, null, -1]
-      } else {
-        yield [chunkType, chunk.trim(), chunkDetail];
-      }
-    }
-
-    chunk = '';
-    chunkType = BLOCK_PARAGRAPH;
-    chunkDetail = [];
-  }
-
-  for (let i = 0; i < lines.length; i++) {
-    let line = lines[i];
-    const next = lines[i + 1] ?? '';
-
-    if (!line.trim()) {
-      yield* flush();
-      continue;
-    }
-
-    if (THEMATIC_BREAK_RE.test(trim(line, flags))) {
-      yield* flush();
-      yield [BLOCK_THEMATIC_BREAK];
-      continue;
-    } else if (next && SETEXT_HEADING_LINE_RE.test(next)) {
-      yield* flush();
-      yield [BLOCK_HEADING, line.trim(), next[0] === '=' ? 1 : 2];
-      i++;
-      continue;
-    } else if (ATX_HEADING_MARKER_RE.test(trim(line, flags))) {
-      yield* flush();
-      yield [BLOCK_HEADING, ...extractATXHeading(trim(line, flags))]
-      continue;
-    } else if (chunkType === BLOCK_CODE && CLOSING_CODE_FENCE_RE.test(line)) {
-      if (line === chunkDetail[0]) {
-        yield* flush();
-        continue;
-      }
-      // Fall-through
-    } else if (CODE_FENCE_RE.test(line)) {
-      chunkType = BLOCK_CODE;
-      const marker = CODE_FENCE_RE.exec(line)![1];
-      const detail = line.slice(marker.length)
-      let lang = '';
-      let attr = '';
-      if (detail) {
-        const [tag, ...attrs] = detail.trim().split(/\s+/);
-        lang = tag;
-        attr = attrs.join(' ');
-      }
-      chunkDetail = [marker, lang, attr]
-      continue;
-    } else if (BLOCK_QUOTE_MARKER_RE.test(trim(line, flags)) && chunkType !== BLOCK_QUOTE) {
-      yield* flush();
-      chunkType = BLOCK_QUOTE;
-    } else if (chunkType === BLOCK_QUOTE && !BLOCK_QUOTE_MARKER_RE.test(line)) {
-      yield* flush();
-    } else if (UNORDERED_LIST_MARKER_RE.test(trim(line, flags))) {
-      yield* flush();
-      chunkType = BLOCK_LIST_UNORDERED;
-    } else if (chunkType === BLOCK_LIST_UNORDERED && !UNORDERED_LIST_MARKER_RE.test(line)) {
-      yield* flush();
-    } else if (ORDERED_LIST_MARKER_RE.test(trim(line, flags)) && chunkType !== BLOCK_LIST_ORDERED) {
-      yield* flush();
-      chunkType = BLOCK_LIST_ORDERED;
-    } else if (chunkType === BLOCK_LIST_ORDERED && !ORDERED_LIST_MARKER_RE.test(line)) {
-      yield* flush();
-    } else if (LINK_REFERENCE_RE.test(line)) {
-      chunkType = BLOCK_LINK_REFERENCE;
-    }
-    
-    if (chunk != '') {
-      chunk += '\n';
-    }
-    chunk += line;
-  }
-
-  yield* flush();
-}
-
-const SPECIAL_RE = /^[_*`]/;
-const BRACES_RE = /^[\[\]]/;
-
-function isSpecial(str: string) {
-  return SPECIAL_RE.test(str) || BRACES_RE.test(str);
-}
-
-function* inlineTokenize(input: string) {
-  let sequence = '';
-
-  function* flush(c: string = '') {
-    if (sequence) yield sequence;
-    sequence = c;
-  }
+  let block: Block = { tokens: [], type: BLOCK_BLANK_LINE, data: {} };
   for (let i = 0; i < input.length; i++) {
     const c = input[i];
-    const next = input[i + 1] ?? '';
+    let tokenType = (TOKEN as any)[c] ?? isTokenAny;
+    if (prevTokenType === isTokenBackslash) tokenType = isTokenAny;
 
-    if (c === '<' && isHTML(input.slice(i))) {
-      yield* flush();
-      const text = input.slice(i);
-      yield text;
-      i += text.length;
-      continue;
-    }
+    if (tokenType === prevTokenType) continue;
+    const chunk = input.slice(p, i);
 
-    if (WHITESPACE_RE.test(c)) {
-      if (!WHITESPACE_RE.test(sequence)) {
-        yield* flush()
-      }
-      sequence += c;
-      continue;
-    }
+    p = i;
+    if (chunk) append(block, [chunk, prevTokenType]);
+    prevTokenType = tokenType;
 
-    if ((isSpecial(sequence) && ((sequence[0] !== '`' && sequence.length === 2) || !SPECIAL_RE.test(c))) || (WHITESPACE_RE.test(sequence) && !WHITESPACE_RE.test(c))) {
-      yield* flush();
-    }
-
-    switch (true) {
-      case c === '\\': {
-        if (next === '`') {
-          sequence += c;
-          continue;
-        }
-        if (next === '\n') {
-          yield* flush();
-        }
-        sequence += c;
-        if (next) sequence += next;
-        i++;
-        break;
-      }
-      case SPECIAL_RE.test(c):
-        if (!sequence || sequence[0] === c) {
-          sequence += c;
-        } else {
-          yield* flush(c)
-        }
-        break;
-      case BRACES_RE.test(c):
-        yield* flush();
-        yield c;
-        break;
-      case c === '!':
-        if (next === '[') {
-          yield* flush();
-          yield '!['
-          i++;
-        } else {
-          sequence += c;
-        }
-        break;
-      default:
-        sequence += c;
-        break;
+    if (tokenType === isTokenLineEnding) {
+      processBlock(block, opts);
+      if (i !== input.length - 1 && block.type === BLOCK_PARAGRAPH && blocks.length > 0 && blocks[blocks.length - 1].type === BLOCK_PARAGRAPH) continue;
+      blocks.push(block);
+      block = { tokens: [], type: BLOCK_BLANK_LINE, data: {} };
     }
   }
-  yield sequence;
+  
+  return blocks;
 }
 
-const modifiers: Record<string, number> = { '*': SPAN_EMPHASIS, '_': SPAN_EMPHASIS, '__': SPAN_STRONG, '**': SPAN_STRONG, '***': SPAN_STRONG_EMPHASIS, '___': SPAN_STRONG_EMPHASIS, '[': SPAN_LINK, '![': SPAN_IMAGE, '`': SPAN_CODE, '``': SPAN_CODE }
-function needles(token: string) {
-  if (token === '[' || token === '![') return [']'];
-  if (token[0] === '`') return [token];
-  if (token.length === 2) return [token, token[0]];
-  return [token]
-}
-function* inlines(input: string, opts: Options): Generator<any[]> {
-  let tokens = Array.from(inlineTokenize(input));
-
-  outer: for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
-
-    if (token[0] === '`') {
-      const needle = needles(token);
-      for (let j = i + 1; j < tokens.length; j++) {
-        const closer = tokens[j];
-        for (const n of needle) {
-          if (closer === n) {
-            yield [SPAN_CODE, extractCodeSpan(tokens.slice(i + 1, j).join(''))];
-            i = j;
-            continue outer;
-          }
-        }
-      }
-    }
-
-    if (token === '[' || token === '![') {
-      const needle = [']'];
-      for (let j = i + 1; j < tokens.length; j++) {
-        const closer = tokens[j];
-        for (const n of needle) {
-          if (closer === n) {
-            const text = tokens.slice(i + 1, j).join('');
-            let tail = tokens.slice(j + 1);
-
-            if (tail[0][0] === '(') {
-              const k = tail.findIndex(value => value.endsWith(')'));
-              tail = tail.slice(0, k + 1);
-            } else if (tail[0][0] === '[') {
-              const k = tail.findIndex(value => value.endsWith(']'));
-              tail = tail.slice(0, k + 1);
-            } else {
-              tail = [];
-            }
-
-            yield [modifiers[token], text, extractLinkDefinition(tail.join(''))];
-            i = j;
-            i += tail.length;
-            continue outer;
-          }
-        }
-      }
-    }
-
-    if (isSpecial(token)) {
-      const needle = needles(token);
-      for (let j = tokens.length - 1; j > i; j--) {
-        const opener = tokens[j];
-        if (opener[0] === '`') {
-          yield [SPAN_TEXT, token]
-          continue outer;
-        }
-        if (opener[0] === '[' || opener[0] === '![') {
-          yield [SPAN_TEXT, token]
-          continue outer;
-        }
-        for (const n of needle) {
-          if (opener === n) {
-            const text = tokens.slice(i + 1, j).join('');
-            if (text.length === 0 || BLANK_EMPHASIS_RE.test(text)) {
-              yield [SPAN_TEXT, token];
-              continue outer;
-            }
-            yield [modifiers[opener], text, []];
-            i = j;
-            continue outer;
-          }
-        }
-      }
-    }
-
-    if (AUTOLINK_RE.test(token) || EMAIL_AUTOLINK_RE.test(token)) {
-      yield [SPAN_AUTOLINK, token.slice(1, -1)];
-    } else if (isHTML(token)) {
-      yield [SPAN_HTML, token]
-    } else if (TRAILING_HARD_BREAK_RE.test(token)) {
-      yield [SPAN_HARD_LINE_BREAK];
-    } else {
-      yield [SPAN_TEXT, token]
-    }
+function append(block: Block, token: Token) {
+  if (INLINE_TOKENS.has(token[1])) {
+    block.hasInline = true;
   }
+  block.tokens.push(token);
 }
 
-interface Options {
-  mode?: 'default' | 'inline';
-  unsafeHTML?: boolean;
-  gfm?: boolean;
-}
+const BLOCK_THEMATIC_BREAK = 41;
+const BLOCK_ATX_HEADING = 42;
+const BLOCK_SETEXT_HEADING = 43;
+const BLOCK_INDENTED_CODE = 44;
+const BLOCK_FENCED_CODE = 45;
+const BLOCK_HTML = 46;
+const BLOCK_LINK_REFERENCE = 47;
+const BLOCK_PARAGRAPH = 48;
+const BLOCK_BLANK_LINE = 49;
 
-function resolveFlags(opts: Options): number {
-  let flags = opts.gfm ? DIALECT_GITHUB : DIALECT_COMMONMARK;
-  if (!opts.unsafeHTML) {
-    flags = flags | FLAG_NOHTML;
+function processBlock(block: Block, opts: Options) {
+  if (block.tokens.length === 0) {
+    block.type = BLOCK_BLANK_LINE;
+    return;
   }
-  return flags;
-}
-
-function parseInline(input: string, opts: Options, ctx: any) {
-  let result = ''
-
-  for (let [inline, text, detail] of inlines(input, opts)) {
-    switch (inline) {
-      case SPAN_CODE: {
-        result += `<code>${text}</code>`;
-        break;
+  let i = 0;
+  for (const token of block.tokens) {
+    if (i === 0 && token[1] === isTokenWhitespace) {
+      if (token[0].length > 3) {
+        block.type = BLOCK_INDENTED_CODE;
+        return;
       }
-      case SPAN_EMPHASIS: {
-        result += `<em>${parseInline(text, opts, ctx)}</em>`;
-        break;
-      }
-      case SPAN_STRONG: {
-        result += `<strong>${parseInline(text, opts, ctx)}</strong>`;
-        break;
-      }
-      case SPAN_LINK: {
-        if (!detail[0]) detail = ctx.refs.find((ref: any[]) => ref[0].toLowerCase() === text.toLowerCase() || ref[0].toLowerCase() === detail[2].toLowerCase()) ?? []
-        if (detail[0]) {
-          result += `<a href="${detail[0]}"${detail[1] ? ` title="${detail[1]}"` : ''}>${parseInline(text, opts, ctx)}</a>`;
-        } else {
-          result += `[${encode(unescape(text))}]`;
+    };
+    if (i === 0 || i === 1) {
+      if (token[1] === isTokenDash || token[1] === isTokenUnderline || token[1] === isTokenAsterisk) {
+        block.type = BLOCK_THEMATIC_BREAK;
+        for (let t of block.tokens.slice(i)) {
+          if (t[1] === isTokenLineEnding) continue;
+          if (t[1] === isTokenWhitespace || t[1] === token[1]) continue;
+          block.type = BLOCK_PARAGRAPH;
+          return;
         }
-        break;
+        return;
       }
-      case SPAN_IMAGE: {
-        if (!detail[0]) detail = ctx.refs.find((ref: any[]) => ref[0].toLowerCase() === text.toLowerCase() || ref[0].toLowerCase() === detail[2].toLowerCase())?.slice(1) ?? [];
-        result += `<img src="${detail[0]}"${typeof text !== 'undefined' ? ` alt="${text.replace(/[*_\[\]]|!\[|(\([^(]+\))/g, '')}"` : ''}${detail[1] ? ` title="${encode(detail[1])}"` : ''} />`;
-        break;
+      if (token[1] === isTokenHash && token[0].length < 7) {
+        block.type = BLOCK_ATX_HEADING;
+        block.data.level = token[0].length;
+        return;
       }
-      case SPAN_AUTOLINK: {
-        result += `<a href="${text}">${text}</a>`;
-        break;
-      }
-      case SPAN_TEXT: {
-        result += encode(unescape(text)).replace(/\s{0,1}\n/g, '\n');
-        break;
-      }
-      case SPAN_HTML: {
-        result += text;
-        break;
-      }
-      case SPAN_HARD_LINE_BREAK: {
-        result += `<br />\n`;
-        break;
+      if (token[0].length > 2 && (token[1] === isTokenBacktick || token[1] === isTokenTilde)) {
+        block.type = BLOCK_FENCED_CODE;
+        return;
       }
     }
+    i++;
   }
-
-  return result;
+  block.type = BLOCK_PARAGRAPH;
 }
 
+function renderInline(block: Block) {
+  if (!block.hasInline) return block.tokens.map(([text]) => text).join('').trimStart();
+  return block.tokens.map(([text]) => text).join('').trimStart();
+}
+
+const RENDER: Record<number, (...args: any) => string> = {
+  [BLOCK_THEMATIC_BREAK]: () => `<hr />`,
+  [BLOCK_ATX_HEADING]: (block: Block) => `<h${block.data.level}></h${block.data.level}>`,
+  [BLOCK_PARAGRAPH]: (block: Block) => `<p>${renderInline(block)}</p>`,
+  [BLOCK_BLANK_LINE]: () => '',
+}
+
+interface Block {
+  tokens: Token[];
+  type: number;
+  data: Record<string, any>;
+  hasInline?: boolean;
+}
+
+export interface Options {}
 export function parse(input: string, opts: Options = {}) {
-  if (opts.mode === 'inline') return parseInline(input, opts, {});
+  const blocks = tokenize(input, opts);
 
-  const flags = resolveFlags(opts);
-  const _blocks = Array.from(blocks(input, flags, {}));
-
-  const refs = _blocks.filter(b => b[0] === BLOCK_LINK_REFERENCE).map(b => extractLinkReferences(b[1])).flat(1);
-  const content = _blocks.filter(b => b[0] !== BLOCK_LINK_REFERENCE);
-  let result = ''
-  const ctx: any = { refs };
-  for (const [block, children, detail] of content) {
-    switch (block) {
-      case BLOCK_QUOTE: {
-        result += `<${detail === 1 ? '' : '/'}blockquote>`;
-        break;
-      }
-      case BLOCK_LIST_ITEM: {
-        result += `<li>${children}</li>`;
-        break;
-      }
-      case BLOCK_LIST_ORDERED: {
-        result += `<${detail === 1 ? '' : '/'}ol>`;
-        break;
-      }
-      case BLOCK_LIST_UNORDERED: {
-        result += `<${detail === 1 ? '' : '/'}ul>`;
-        break;
-      }
-      case BLOCK_THEMATIC_BREAK: {
-        result += '<hr />';
-        break;
-      }
-      case BLOCK_HEADING: {
-        result += `<h${detail}>${parseInline(children, opts, ctx)}</h${detail}>`;
-        break;
-      }
-      case BLOCK_PARAGRAPH: {
-        result += `<p>${parseInline(children, opts, ctx).replace(/^\s+/gm, '')}</p>`;
-        break;
-      }
-      case BLOCK_CODE: {
-        const lang = unescape(detail);
-        result += `<pre><code${lang ? ` class="language-${lang}"` : ''}>${children}</code></pre>`
-        break;
-      }
-    }
-    if (block) {
-      result += '\n';
-    }
+  let result = '';
+  for (const block of blocks) {
+    result += RENDER[block.type](block, opts) + '\n';
   }
+  
   return result;
 }

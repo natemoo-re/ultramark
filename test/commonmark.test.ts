@@ -1,5 +1,4 @@
 import { parse } from "../src";
-import { render } from 'ultrahtml';
 import { describe, expect, it, test } from "vitest";
 import testcases from './commonmark-0.30.json';
 
