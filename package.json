@@ -17,7 +17,8 @@
     "sample": "tsx scripts/sample.ts",
     "lint": "prettier \"**/*.{js,ts,md}\"",
     "dev": "vitest",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:match": "vitest run -t"
   },
   "files": [
     "dist",

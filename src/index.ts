@@ -43,6 +43,7 @@ const B_UNKNOWN = 0;
 const B_THEMATIC_BREAK = 1;
 const B_ATX_HEADING = 2;
 const B_SETEXT_HEADING = 3;
+const B_SETEXT_BREAK = 31;
 const B_INDENTED_CODE = 4;
 const B_FENCED_CODE = 5;
 const B_HTML = 6;
@@ -69,10 +70,11 @@ const DATA_CONTAINER = 1;
 const DATA_HEADING_LEVEL = 2;
 const DATA_LINK_REF_START = 3;
 const DATA_LINK_REF_END = 4;
+const DATA_DOUBLE_LINE_ENDING = 5;
+const DATA_FENCE_OPENER = 6;
 
-const TOKEN_RE = /(?:(([\(\)\[\]\<\>\-_~|!:`#\\*\n])\2*)|^(\s+)|([^\(\)\[\]\<\>#\-_~|!:`\\*\n])+)/gm;
+const TOKEN_RE = /(?:(([\(\)\[\]\<\>\-_~|!:`#\\*\n])\2*)|^([ \t\f\v]+)|([^\(\)\[\]\<\>#\-_~|!:`\\*\n])+)/gm;
 const startsWithWhitespace = (str: string, len: number = 1) => new RegExp(`^\\s{${len},}`).test(str);
-const endsWithWhitespace = (str: string, len: number = 1) => new RegExp(`\\s{${len},}$`).test(str);
 // Data Sets
 const TOKENS: Record<string, any> = {
   '*': T_ASTERISK,
@@ -99,7 +101,9 @@ const TOKENS_INLINE = new Set([T_ASTERISK, T_UNDERLINE, T_TILDE, T_BACKTICK, T_O
 const HTML_PRE = set('pre|script|style|textarea');
 const HTML_INLINE = set('address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h1|h2|h3|h4|h5|h6|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul');
 const ATX_TRAILER_RE = /(?<![#\\\S])#+\s*$/gm;
-const PARAGRAPH_LEADING_WHITESPACE_RE = /^\s+/gm;
+const HARD_BREAK_RE = /(\\| {2,}|\t)\n$/gm;
+const LEADING_WHITESPACE_RE = /^\s+/gm;
+const TRAILING_WHITESPACE_RE = /\s+$/gm;
 
 // === UTILITIES ===
 const is = (a: any, b: any) => a === b;
@@ -114,8 +118,6 @@ const arr2 = arrN.bind(null, 2);
 type Token = [value: string, type: number];
 const getTokenValue: ((token: Token) => string) = arr0;
 const getTokenType: ((token: Token) => number) = arr1;
-const isTokenLengthGreaterThanEqual = (token: Token, l: number): boolean => len(getTokenValue(token)) >= l;
-const isTokenLengthLessThan = (token: Token, l: number): boolean => len(getTokenValue(token)) < l;
 
 type Block = [tokens: Token[], type: number, datas: Record<string, any>];
 const getBlockTokens: ((block: Block) => Token[]) = arr0;
@@ -130,7 +132,6 @@ const getBlockData = (block: Block, name: number): any => block[2][name];
 
 const setBlockType = (block: Block, type: number) => { block[1] = type; return true };
 const sliceBlockTokens = (block: Block, n: number) => { block[0] = block[0].slice(n) };
-const dropBlockTokens = (block: Block, n: number) => { block[0] = block[0].slice(0, n) };
 const setBlockData = (block: Block, name: number, value: any) => { block[2][name] = value };
 
 export function parseBlocks(input: string, opts: Options): Block[] {
@@ -141,6 +142,8 @@ export function parseBlocks(input: string, opts: Options): Block[] {
   function merge() {
     const prevBlock = blocks[blocks.length - 1];
     getBlockTokens(prevBlock).push(...getBlockTokens(block));
+    // Transfer block data
+    Object.assign(prevBlock[2], block[2]);
     block = [[], B_UNKNOWN, {}];
   }
   function flush() {
@@ -151,11 +154,20 @@ export function parseBlocks(input: string, opts: Options): Block[] {
     const type = getBlockType(block);
     const prevType = getBlockType(prevBlock ?? []);
 
-    if (prevType === B_PARAGRAPH && isAny(type, B_PARAGRAPH, B_INDENTED_CODE)) {
+    if (prevType === B_PARAGRAPH && isAny(type, B_PARAGRAPH, B_INDENTED_CODE, B_SETEXT_BREAK)) {
       if (type === B_INDENTED_CODE) return merge();
-      const prevTokens = getBlockTokens(prevBlock);
-      const prevTrailer = getBlockToken(prevBlock, len(prevTokens) - 1);
-      if (getTokenValue(prevTrailer).length === 1) return merge();
+      if (type === B_SETEXT_BREAK) {
+        setBlockData(prevBlock, DATA_HEADING_LEVEL, getBlockData(block, DATA_HEADING_LEVEL));
+        setBlockType(prevBlock, B_SETEXT_HEADING);
+        block = [[], B_UNKNOWN, {}];
+        return;
+      }
+      if (!getBlockData(prevBlock, DATA_DOUBLE_LINE_ENDING)) return merge();
+    } else if (prevType === B_PARAGRAPH && type === B_THEMATIC_BREAK && getTokenType(getBlockToken(block, 0)) === T_DASH) {
+        setBlockData(prevBlock, DATA_HEADING_LEVEL, 2);
+        setBlockType(prevBlock, B_SETEXT_HEADING);
+        block = [[], B_UNKNOWN, {}];
+        return;
     }
 
     blocks.push(block);
@@ -163,11 +175,19 @@ export function parseBlocks(input: string, opts: Options): Block[] {
   }
 
   let m;
+  let prevToken: Token = ['', -1];
   while (m = TOKEN_RE.exec(input)) {
     const chunk = m[0];
-    const tokenType = TOKENS[chunk[0]] ?? (m[3] ? T_WHITESPACE : T_ANY);
+    let tokenType = TOKENS[chunk[0]] ?? (m[3] ? T_WHITESPACE : T_ANY);
 
-    appendToken(block, [chunk, tokenType]);
+    if (getTokenType(prevToken) === T_BACKSLASH && tokenType !== T_LINE_ENDING) {
+      tokenType === T_ANY;
+    }
+
+    const token: Token = [chunk, tokenType];
+    appendToken(block, token);
+    prevToken = token;
+
     if (is(tokenType, T_LINE_ENDING)) processBlock(block, opts);
     if (is(tokenType, T_LINE_ENDING) && canExit(block)) {
       flush()
@@ -185,6 +205,7 @@ function renderBlock(block: Block): string {
     case B_THEMATIC_BREAK: return '<hr />';
     case B_ATX_HEADING: return render('h' + getBlockData(block, DATA_HEADING_LEVEL), block);
     case B_SETEXT_HEADING: return render('h' + getBlockData(block, DATA_HEADING_LEVEL), block);
+    case B_SETEXT_BREAK:
     case B_PARAGRAPH: return render('p', block);
     case B_INDENTED_CODE: return tag('pre', render('code', block));
     case B_FENCED_CODE: return tag('pre', render('code', block));
@@ -194,17 +215,20 @@ function renderBlock(block: Block): string {
 
 function renderInline(block: Block): string {
   switch (getBlockType(block)) {
-    case B_PARAGRAPH: return getBlockText(block).replace(PARAGRAPH_LEADING_WHITESPACE_RE, '').trim();
+    case B_SETEXT_BREAK:
+    case B_PARAGRAPH: return getBlockText(block).trim().replace(LEADING_WHITESPACE_RE, '');
     case B_ATX_HEADING: return getBlockText(block).replace(ATX_TRAILER_RE, '').trim();
     case B_INDENTED_CODE: return getBlockText(block).trim() + '\n';
     case B_FENCED_CODE: return getBlockText(block) + '\n';
   }
-  return '';
+  return getBlockText(block).trim();
 }
 
 function appendToken(block: Block, token: Token) {
   if (TOKENS_INLINE.has(getTokenType(token))) {
     setBlockData(block, DATA_HAS_INLINE, true);
+  } else if (getTokenType(token) === T_LINE_ENDING && getTokenValue(token).length > 1) {
+    setBlockData(block, DATA_DOUBLE_LINE_ENDING, true);
   }
   getBlockTokens(block).push(token);
 }
@@ -213,7 +237,7 @@ function canExit(block: Block): boolean {
   const type = getBlockType(block);
   if (type === B_PARAGRAPH) {
     return true;
-  } if (is(type, B_HTML)) {
+  } else if (type === B_HTML) {
     const chunk = block[0].map(t => t[0]).join('');
     const condition: number = block[2][0];
     // TODO: correct end conditions
@@ -246,7 +270,38 @@ function processBlock(block: Block, opts: Options) {
   }
 
   if (isAny(type, T_DASH, T_UNDERLINE, T_ASTERISK)) {
-    return setBlockType(block, B_THEMATIC_BREAK);
+    let count = len(value);
+    for (let j = i + 1; j < len(getBlockTokens(block)); j++) {
+      const [next, nextType] = getBlockToken(block, j);
+      if (nextType === type) {
+        count += len(getTokenValue(token));
+      } else if (isAny(nextType, T_ANY, T_LINE_ENDING) && len(next.trim()) === 0) {
+        continue;
+      } else {
+        count = -1;
+        break;
+      }
+    }
+    if (count >= 3) return setBlockType(block, B_THEMATIC_BREAK);
+  }
+
+  if (isAny(type, T_EQUALS, T_DASH)) {
+    let count = len(value);
+    for (let j = i + 1; j < len(getBlockTokens(block)); j++) {
+      const [next, nextType] = getBlockToken(block, j);
+      if (nextType === type) {
+        count += len(getTokenValue(token));
+      } else if (isAny(nextType, T_ANY, T_LINE_ENDING) && len(next.trim()) === 0) {
+        continue;
+      } else {
+        count = -1;
+        break;
+      }
+    }
+    if (count >= 1) {
+      setBlockData(block, DATA_HEADING_LEVEL, type === T_EQUALS ? 1 : 2);
+      return setBlockType(block, B_SETEXT_BREAK);
+    }
   }
 
   if (is(type, T_HASH) && len(value) < 7) {
@@ -259,11 +314,13 @@ function processBlock(block: Block, opts: Options) {
   }
 
   if (isAny(type, T_BACKTICK, T_TILDE) && len(value) >= 3) {
+    setBlockData(block, DATA_FENCE_OPENER, value);
     return setBlockType(block, B_FENCED_CODE);
   }
 
   if (is(type, T_LESS_THAN)) {
-    return setBlockType(block, B_HTML);
+    const value = getTokenValue(getBlockToken(block, i + 1));
+    if (HTML_PRE.has(value) || HTML_INLINE.has(value)) return setBlockType(block, B_HTML);
   }
 
   if (is(type, T_GREATER_THAN)) {
@@ -284,6 +341,10 @@ function processBlock(block: Block, opts: Options) {
         return setBlockType(block, B_LINK_REFERENCE);
       }
     }
+  }
+
+  if (getTokenType(getBlockTokens(block)[0]) === T_WHITESPACE) {
+    return setBlockType(block, B_BLANK_LINE);
   }
 
   return setBlockType(block, B_PARAGRAPH);
