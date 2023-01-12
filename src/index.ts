@@ -1,3 +1,5 @@
+import { decode } from 'tiny-decode';
+
 export interface Options {
 
 }
@@ -72,6 +74,22 @@ const DATA_LINK_REF_START = 3;
 const DATA_LINK_REF_END = 4;
 const DATA_DOUBLE_LINE_ENDING = 5;
 const DATA_FENCE_OPENER = 6;
+const DATA_FENCE_ATTRS = 7;
+
+const SPLIT_ATTRS_RE = /([^\s=]*)\s*?=?\s*?(['"]?)([\s\S]*?)\2\s+/gim;
+function splitAttrs(str?: string) {
+  let obj: Record<string, string> = {};
+  let token: any;
+  if (str) {
+    SPLIT_ATTRS_RE.lastIndex = 0;
+    str = " " + (str || "") + " ";
+    while ((token = SPLIT_ATTRS_RE.exec(str))) {
+      if (token[0] === " ") continue;
+      obj[token[1]] = token[3];
+    }
+  }
+  return obj;
+}
 
 const TOKEN_RE = /(?:(([\(\)\[\]\<\>\-_~|!:`#\\*\n])\2*)|^([ \t\f\v]+)|([^\(\)\[\]\<\>#\-_~|!:`\\*\n])+)/gm;
 const startsWithWhitespace = (str: string, len: number = 1) => new RegExp(`^\\s{${len},}`).test(str);
@@ -198,8 +216,10 @@ export function parseBlocks(input: string, opts: Options): Block[] {
   return blocks;
 }
 
-const tag = (name: string, content?: string) => `<${name}>${content ?? ''}</${name}>`
-const render = (name: string, block: Block) => tag(name, renderInline(block));
+const tag = (name: string, content?: string, attrs?: Record<string, string>) => {
+  return `<${name}${attrs ? Object.entries(attrs).map(([k, v]) => ` ${k}="${v}"`).join('') : ''}>${content ?? ''}</${name}>`;
+}
+const render = (name: string, block: Block, attrs?: Record<string, string>) => tag(name, renderInline(block), attrs);
 function renderBlock(block: Block): string {
   switch (getBlockType(block)) {
     case B_THEMATIC_BREAK: return '<hr />';
@@ -208,7 +228,11 @@ function renderBlock(block: Block): string {
     case B_SETEXT_BREAK:
     case B_PARAGRAPH: return render('p', block);
     case B_INDENTED_CODE: return tag('pre', render('code', block));
-    case B_FENCED_CODE: return tag('pre', render('code', block));
+    case B_FENCED_CODE: {
+      const rawAttrs = getBlockData(block, DATA_FENCE_ATTRS)
+      const { language = '', ...userData } = rawAttrs ? splitAttrs(`language=${rawAttrs.trimStart()}`) : {};
+      return tag('pre', render('code', block, language ? { class: `language-${language}` } : undefined));
+    }
   }
   return '';
 }
@@ -218,8 +242,8 @@ function renderInline(block: Block): string {
     case B_SETEXT_BREAK:
     case B_PARAGRAPH: return getBlockText(block).trim().replace(LEADING_WHITESPACE_RE, '');
     case B_ATX_HEADING: return getBlockText(block).replace(ATX_TRAILER_RE, '').trim();
-    case B_INDENTED_CODE: return getBlockText(block).trim() + '\n';
-    case B_FENCED_CODE: return getBlockText(block) + '\n';
+    case B_INDENTED_CODE:
+    case B_FENCED_CODE: return getBlockText(block).trim() ? getBlockText(block).trim() + '\n' : '';
   }
   return getBlockText(block).trim();
 }
@@ -245,6 +269,15 @@ function canExit(block: Block): boolean {
     // return BLOCK_HTML_CLOSE_RE[condition]?.test(chunk) ?? block.tokens[block.tokens.length - 1][1] === T_LINE_ENDING;
   } else if (is(type, B_LINK_REFERENCE) && getBlockData(block, DATA_LINK_REF_END)) {
     return false;
+  } else if (getBlockType(block) === B_FENCED_CODE) {
+    const tokens = getBlockTokens(block);
+    const chunk = getTokenValue(getBlockToken(block, len(tokens) - 2) ?? []);
+    if (chunk === getBlockData(block, DATA_FENCE_OPENER)) {
+      block[0] = block[0].slice(0, len(tokens) - 2);
+      return true;
+    } else {
+      return false;
+    }
   }
   return true;
 }
@@ -315,6 +348,22 @@ function processBlock(block: Block, opts: Options) {
 
   if (isAny(type, T_BACKTICK, T_TILDE) && len(value) >= 3) {
     setBlockData(block, DATA_FENCE_OPENER, value);
+    let end = i + 1;
+    for (let j = i + 1; j < len(getBlockTokens(block)); j++) {
+      const token = getBlockToken(block, j);
+      if (getTokenType(token) === T_LINE_ENDING) {
+        end = j;
+        break;
+      }
+      if (type === T_BACKTICK && getTokenValue(token) === value) {
+        return setBlockType(block, B_PARAGRAPH);
+      }
+    }
+    const attrs = getBlockTokens(block).slice(i + 1, end).map(t => t[0]).join('');
+    if (attrs.trim()) {
+      setBlockData(block, DATA_FENCE_ATTRS, attrs);
+    }
+    sliceBlockTokens(block, end);
     return setBlockType(block, B_FENCED_CODE);
   }
 
