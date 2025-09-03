@@ -1,14 +1,14 @@
 import { parse } from "../src";
-import { render } from 'ultrahtml';
-import { describe, expect, it, test } from "vitest";
-import testcases from './commonmark-0.30.json';
+import { describe, expect, it } from "vitest";
+import { tests } from 'commonmark-spec'
 
-const sections = new Map<string, Array<typeof testcases[number]>>();
-for (const testcase of testcases) {
-  if (sections.has(testcase.section)) {
-    sections.get(testcase.section)!.push(testcase);
+const sections = new Map<string, Array<typeof tests[number]>>();
+for (const test of tests) {
+  console.log(test);
+  if (sections.has(test.section)) {
+    sections.get(test.section)!.push(test);
   } else {
-    sections.set(testcase.section, [testcase]);
+    sections.set(test.section, [test]);
   }
 }
 
