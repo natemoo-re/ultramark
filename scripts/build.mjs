@@ -1,34 +1,25 @@
-import { build } from "esbuild";
-import colors from "chalk";
+import { build } from 'esbuild';
+import { minify } from 'terser';
+import { gzipSync } from 'node:zlib';
+import { readFileSync, writeFileSync } from 'node:fs';
 
-async function run() {
-  const files = ["src/index.ts"];
-  const output = {};
-  const promises = [];
-  for (const file of files) {
-    const config = {
-      metafile: true,
-      entryPoints: [file],
-      outfile: file.replace("src", "dist").replace(".ts", ".js"),
-      external: ["tiny-decode"],
-      bundle: true,
-      format: "esm",
-      minify: false,
-      sourcemap: "external",
-      target: "node16",
-      platform: "node",
-    }
-    promises.push(
-      build(config),
-      build({ ...config, outfile: file.replace("src", "dist").replace(".ts", ".cjs"), format: 'cjs' })
-    );
-  }
-  await Promise.all(promises);
-  for (const [file, size] of Object.entries(output).sort(([a], [b]) =>
-    a.localeCompare(b)
-  )) {
-    console.log(`${file} ${colors.green(size)}`);
-  }
+// Self-contained bundles per entrypoint: ultrahtml external so apps already
+// using the companion never pay for it twice, core duplicated nowhere else.
+for (const f of ['index', 'ast', 'dom']) {
+  await build({
+    entryPoints: [`src/${f}.ts`],
+    outfile: `dist/${f}.js`,
+    bundle: true,
+    external: ['ultrahtml'],
+    format: 'esm',
+    target: 'es2022',
+  });
+  const { code } = await minify(readFileSync(`dist/${f}.js`, 'utf8'), {
+    module: true,
+    toplevel: true,
+    compress: true,
+    mangle: true,
+  });
+  writeFileSync(`dist/${f}.js`, code);
+  console.log(`${f}\t${code.length} B\t${gzipSync(code).length} B gzip`);
 }
-
-run();

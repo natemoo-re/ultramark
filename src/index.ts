@@ -1,415 +1,199 @@
-import { decode } from 'tiny-decode';
+// ultramark — aggressively small, streaming markdown for agents (strict subset)
 
-export interface Options {
-
+export interface Parser {
+  /** Feed a chunk. Returns HTML for blocks completed by this chunk (stable, append-only). */
+  push(chunk: string): string;
+  /** Tentative HTML for the currently-open block, if any. Not yet stable. */
+  peek(): string;
+  /** Flush the remaining buffer and any open block. */
+  end(): string;
 }
 
-export function parse(input: string, opts: Options = {}) {
-    const blocks = parseBlocks(input, opts);
-    const refs = processLinkReferences(blocks);
+const esc = (s: string) =>
+  s
+    .replace(/&(?![#\w]+;)/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 
-    let result = ''
-    for (const block of blocks) {
-      const old = result;
-      result += renderBlock(block);
-      if (!is(result, old)) result += '\n';
-    }
-
-    return result;
-}
-
-// === CONSTANTS ===
-// Tokens
-const T_ANY = -1;
-const T_WHITESPACE = 0;
-const T_ASTERISK = 1;
-const T_BACKSLASH = 2;
-const T_BACKTICK = 3;
-const T_CLOSE_BRACE = 4;
-const T_CLOSE_PAREN = 5;
-const T_COLON = 6;
-const T_DASH = 7;
-const T_EQUALS = 8;
-const T_EXCLAMATION = 9;
-const T_GREATER_THAN = 10;
-const T_HASH = 11;
-const T_LESS_THAN = 12;
-const T_LINE_ENDING = 13;
-const T_OPEN_BRACE = 14;
-const T_OPEN_PAREN = 15;
-const T_PIPE = 16;
-const T_TILDE = 17;
-const T_UNDERLINE = 18;
-// (4) Blocks
-const B_UNKNOWN = 0;
-const B_THEMATIC_BREAK = 1;
-const B_ATX_HEADING = 2;
-const B_SETEXT_HEADING = 3;
-const B_SETEXT_BREAK = 31;
-const B_INDENTED_CODE = 4;
-const B_FENCED_CODE = 5;
-const B_HTML = 6;
-const B_LINK_REFERENCE = 7;
-const B_PARAGRAPH = 8;
-const B_BLANK_LINE = 9;
-// (5) Containers
-const C_BLOCKQUOTE = 10;
-const C_LIST_ITEM = 11;
-const C_LIST = 12;
-// (6) Spans
-const S_CODE = 1;
-const S_EMPHASIS = 2;
-const S_LINK = 3;
-const S_IMAGE = 4;
-const S_AUTOLINK = 5;
-const S_HTML = 6;
-const S_HARD_BREAK = 7;
-const S_SOFT_BREAK = 8;
-const S_TEXT = 9;
-// Data Helpers
-const DATA_HAS_INLINE = 0;
-const DATA_CONTAINER = 1;
-const DATA_HEADING_LEVEL = 2;
-const DATA_LINK_REF_START = 3;
-const DATA_LINK_REF_END = 4;
-const DATA_DOUBLE_LINE_ENDING = 5;
-const DATA_FENCE_OPENER = 6;
-const DATA_FENCE_ATTRS = 7;
-
-const SPLIT_ATTRS_RE = /([^\s=]*)\s*?=?\s*?(['"]?)([\s\S]*?)\2\s+/gim;
-function splitAttrs(str?: string) {
-  let obj: Record<string, string> = {};
-  let token: any;
-  if (str) {
-    SPLIT_ATTRS_RE.lastIndex = 0;
-    str = " " + (str || "") + " ";
-    while ((token = SPLIT_ATTRS_RE.exec(str))) {
-      if (token[0] === " ") continue;
-      obj[token[1]] = token[3];
-    }
-  }
-  return obj;
-}
-
-const TOKEN_RE = /(?:(([\(\)\[\]\<\>\-_~|!:`#\\*\n])\2*)|^([ \t\f\v]+)|([^\(\)\[\]\<\>#\-_~|!:`\\*\n])+)/gm;
-const startsWithWhitespace = (str: string, len: number = 1) => new RegExp(`^\\s{${len},}`).test(str);
-// Data Sets
-const TOKENS: Record<string, any> = {
-  '*': T_ASTERISK,
-  '\\': T_BACKSLASH,
-  '`': T_BACKTICK,
-  ']': T_CLOSE_BRACE,
-  ':': T_COLON,
-  '-': T_DASH,
-  '=': T_EQUALS,
-  '!': T_EXCLAMATION,
-  '>': T_GREATER_THAN,
-  '#': T_HASH,
-  '<': T_LESS_THAN,
-  '\n': T_LINE_ENDING,
-  '[': T_OPEN_BRACE,
-  '|': T_PIPE,
-  '~': T_TILDE,
-  '_': T_UNDERLINE,
-  '(': T_OPEN_PAREN,
-  ')': T_CLOSE_PAREN,
+export const inline = (s: string): string => {
+  const st: string[] = [];
+  // Stash raw HTML behind \x00N\x00 so later passes can't touch it
+  const keep = (h: string) => `\x00${st.push(h) - 1}\x00`;
+  const url = (u: string) => (/^\s*(javascript|vbscript):/i.test(u) ? '#' : u);
+  s = esc(s)
+    // code spans (contents protected)
+    .replace(/`([^`]+)`/g, (_, m) => keep(`<code>${m}</code>`))
+    // links & images — tags stashed so emphasis still applies to the text
+    // (destination allows one level of balanced parens, e.g. wikipedia URLs)
+    .replace(/(!?)\[([^\]]*)\]\(\s*((?:[^\s()]|\([^)]*\))+)[^)]*\)/g, (_, b, t, u) =>
+      b
+        ? keep(`<img src="${url(u)}" alt="${t}">`)
+        : keep(`<a href="${url(u)}">`) + t + keep('</a>')
+    )
+    // bare URLs
+    .replace(/(^|[\s(])(https?:\/\/[^\s<)"']+)/g, (_, pre, u) => {
+      const trail = /[.,;:!?]+$/.exec(u)?.[0] ?? '';
+      u = u.slice(0, u.length - trail.length);
+      return pre + keep(`<a href="${u}">${u}</a>`) + trail;
+    })
+    // emphasis — `*` only (subset call: `_` is literal, snake_case is safe)
+    .replace(/(\*{1,3})([^*]+)\1/g, (_, m, t) =>
+      m[2] ? `<strong><em>${t}</em></strong>` : m[1] ? `<strong>${t}</strong>` : `<em>${t}</em>`
+    )
+    .replace(/~~([^~]+)~~/g, '<del>$1</del>');
+  return s.replace(/\x00(\d+)\x00/g, (_, i) => st[i]);
 };
-const set = (v: string) => new Set(v.split('|'));
-const TOKENS_INLINE = new Set([T_ASTERISK, T_UNDERLINE, T_TILDE, T_BACKTICK, T_OPEN_BRACE, T_BACKSLASH]);
-const HTML_PRE = set('pre|script|style|textarea');
-const HTML_INLINE = set('address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h1|h2|h3|h4|h5|h6|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul');
-const ATX_TRAILER_RE = /(?<![#\\\S])#+\s*$/gm;
-const HARD_BREAK_RE = /(\\| {2,}|\t)\n$/gm;
-const LEADING_WHITESPACE_RE = /^\s+/gm;
-const TRAILING_WHITESPACE_RE = /\s+$/gm;
 
-// === UTILITIES ===
-const is = (a: any, b: any) => a === b;
-const isAny = (a: any, ...b: any) => b.includes(a);
-const len = (v: any): number => v.length;
-const arrN = (n: number, arr: any[]) => arr[n];
-const arr0 = arrN.bind(null, 0);
-const arr1 = arrN.bind(null, 1);
-const arr2 = arrN.bind(null, 2);
+const cells = (r: string) => r.replace(/^\s*\||\|\s*$/g, '').split('|').map((c) => c.trim());
 
-// === DATA STRUCTURES ===
-type Token = [value: string, type: number];
-const getTokenValue: ((token: Token) => string) = arr0;
-const getTokenType: ((token: Token) => number) = arr1;
+const task = (t: string) =>
+  t.replace(/^\[([ xX])\] /, (_, c) => `<input type="checkbox" disabled${c === ' ' ? '' : ' checked'}> `);
 
-type Block = [tokens: Token[], type: number, datas: Record<string, any>];
-const getBlockTokens: ((block: Block) => Token[]) = arr0;
-const getBlockText = (block: Block, start?: number, end?: number) => {
-  let tokens = getBlockTokens(block);
-  if (start) tokens = tokens.slice(start, end);
-  return tokens.map(t => getTokenValue(t)).join('');
-}
-const getBlockToken = (block: Block, n: number): Token => arrN(n, getBlockTokens(block));
-const getBlockType: ((block: Block) => number) = arr1;
-const getBlockData = (block: Block, name: number): any => block[2][name];
-
-const setBlockType = (block: Block, type: number) => { block[1] = type; return true };
-const sliceBlockTokens = (block: Block, n: number) => { block[0] = block[0].slice(n) };
-const setBlockData = (block: Block, name: number, value: any) => { block[2][name] = value };
-
-export function parseBlocks(input: string, opts: Options): Block[] {
-  TOKEN_RE.lastIndex = 0;
-  let blocks: Block[] = [];
-
-  let block: Block = [[], B_UNKNOWN, {}];
-  function merge() {
-    const prevBlock = blocks[blocks.length - 1];
-    getBlockTokens(prevBlock).push(...getBlockTokens(block));
-    // Transfer block data
-    Object.assign(prevBlock[2], block[2]);
-    block = [[], B_UNKNOWN, {}];
+const renderPara = (ls: string[]): string => {
+  // GFM table: header row, delimiter row, body rows — detected at flush time,
+  // so it costs the stream nothing
+  if (ls.length > 1 && ls[0].includes('|') && cells(ls[1]).every((c) => /^:?-+:?$/.test(c))) {
+    const al = cells(ls[1]).map((c) =>
+      c[0] === ':' ? (c.slice(-1) === ':' ? 'center' : 'left') : c.slice(-1) === ':' ? 'right' : ''
+    );
+    const at = (i: number) => (al[i] ? ` align="${al[i]}"` : '');
+    let h =
+      '<table>\n<thead>\n<tr>' +
+      cells(ls[0]).map((c, i) => `<th${at(i)}>${inline(c)}</th>`).join('') +
+      '</tr>\n</thead>\n<tbody>\n';
+    for (const r of ls.slice(2))
+      h += '<tr>' + cells(r).map((c, i) => `<td${at(i)}>${inline(c)}</td>`).join('') + '</tr>\n';
+    return h + '</tbody>\n</table>\n';
   }
-  function flush() {
-    if (is(getBlockType(block), B_UNKNOWN)) return;
-    processBlock(block, opts);
+  return `<p>${inline(ls.join('\n'))}</p>\n`;
+};
 
-    const prevBlock = blocks[blocks.length - 1];
-    const type = getBlockType(block);
-    const prevType = getBlockType(prevBlock ?? []);
+const renderFence = (ls: string[], info: string): string =>
+  `<pre><code${info ? ` class="language-${info}"` : ''}>${ls.length ? esc(ls.join('\n')) + '\n' : ''}</code></pre>\n`;
 
-    if (prevType === B_PARAGRAPH && isAny(type, B_PARAGRAPH, B_INDENTED_CODE, B_SETEXT_BREAK)) {
-      if (type === B_INDENTED_CODE) return merge();
-      if (type === B_SETEXT_BREAK) {
-        setBlockData(prevBlock, DATA_HEADING_LEVEL, getBlockData(block, DATA_HEADING_LEVEL));
-        setBlockType(prevBlock, B_SETEXT_HEADING);
-        block = [[], B_UNKNOWN, {}];
-        return;
+// items: [indent, ordered, text, startNumber]
+const renderList = (items: any[][]): string => {
+  const tag = items[0][1] ? 'ol' : 'ul';
+  let h = `<${tag}${items[0][3] > 1 ? ` start="${items[0][3]}"` : ''}>\n`,
+    i = 0;
+  while (i < items.length) {
+    const it = items[i];
+    const kids: any[][] = [];
+    let j = i + 1;
+    while (j < items.length && items[j][0] > it[0]) kids.push(items[j++]);
+    h += `<li>${task(inline(it[2]))}${kids.length ? '\n' + renderList(kids).slice(0, -1) : ''}</li>\n`;
+    i = j;
+  }
+  return h + `</${tag}>\n`;
+};
+
+export const createParser = (): Parser => {
+  let buf = '',
+    open = '',
+    info = '',
+    fenceEnd: RegExp = /$^/,
+    lines: any[] = [];
+
+  const quote = (qs: string[]): string => {
+    const p = createParser();
+    let h = '';
+    for (const l of qs) h += p.push(l + '\n');
+    return `<blockquote>\n${h + p.end()}</blockquote>\n`;
+  };
+
+  // Render the committed open block, if any (dispatch on block kind)
+  const R: Record<string, (ls: any[], i: string) => string> = {
+    p: renderPara,
+    f: renderFence,
+    q: quote,
+    l: renderList,
+  };
+  const draft = (): string => (R[open] ? R[open](lines, info) : '');
+
+  const close = () => {
+    const h = draft();
+    open = '';
+    lines = [];
+    info = '';
+    return h;
+  };
+
+  // Close the current block and open a new one of the given kind
+  const swap = (t: string) => {
+    const h = close();
+    open = t;
+    lines = [];
+    return h;
+  };
+
+  const feed = (line: string): string => {
+    let m: RegExpMatchArray | null,
+      h = '';
+    // inside a fence: everything is literal until the closing fence
+    if (open === 'f') {
+      if (fenceEnd.test(line)) return close();
+      lines.push(line);
+      return '';
+    }
+    if (!line.trim()) return close();
+    if ((m = line.match(/^\s{0,3}(`{3,}|~{3,})\s*(\S*)/))) {
+      h = swap('f');
+      fenceEnd = new RegExp(`^\\s{0,3}${m[1][0]}{${m[1].length},}\\s*$`);
+      info = m[2] || '';
+      return h;
+    }
+    if ((m = line.match(/^\s{0,3}(#{1,6})(?:\s+|$)(.*)$/)))
+      return close() + `<h${m[1].length}>${inline(m[2].replace(/\s+#*\s*$/, '').trimEnd())}</h${m[1].length}>\n`;
+    if (/^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) return close() + '<hr>\n';
+    if ((m = line.match(/^\s{0,3}>[ ]?(.*)$/))) {
+      if (open !== 'q') h = swap('q');
+      lines.push(m[1]);
+      return h;
+    }
+    if ((m = line.match(/^(\s*)(?:(\d+)[.)]|[-*+])\s+(.*)$/))) {
+      if (open !== 'l') h = swap('l');
+      lines.push([m[1].length, m[2] ? 1 : 0, m[3], +(m[2] || 0)]);
+      return h;
+    }
+    if (open !== 'p') h = swap('p');
+    lines.push(line.trimStart());
+    return h;
+  };
+
+  return {
+    push(chunk: string) {
+      buf += chunk.replace(/\r/g, '');
+      let h = '',
+        i: number;
+      while (~(i = buf.indexOf('\n'))) {
+        h += feed(buf.slice(0, i));
+        buf = buf.slice(i + 1);
       }
-      if (!getBlockData(prevBlock, DATA_DOUBLE_LINE_ENDING)) return merge();
-    } else if (prevType === B_PARAGRAPH && type === B_THEMATIC_BREAK && getTokenType(getBlockToken(block, 0)) === T_DASH) {
-        setBlockData(prevBlock, DATA_HEADING_LEVEL, 2);
-        setBlockType(prevBlock, B_SETEXT_HEADING);
-        block = [[], B_UNKNOWN, {}];
-        return;
-    }
+      return h;
+    },
+    peek: () => {
+      // tentatively feed the buffered partial line, then roll state back
+      const o = open,
+        l = lines.slice(),
+        i = info,
+        f = fenceEnd;
+      const h = (buf ? feed(buf) : '') + draft();
+      open = o;
+      lines = l;
+      info = i;
+      fenceEnd = f;
+      return h;
+    },
+    end() {
+      const h = (buf ? feed(buf) : '') + close();
+      buf = '';
+      return h;
+    },
+  };
+};
 
-    blocks.push(block);
-    block = [[], B_UNKNOWN, {}];
-  }
-
-  let m;
-  let prevToken: Token = ['', -1];
-  while (m = TOKEN_RE.exec(input)) {
-    const chunk = m[0];
-    let tokenType = TOKENS[chunk[0]] ?? (m[3] ? T_WHITESPACE : T_ANY);
-
-    if (getTokenType(prevToken) === T_BACKSLASH && tokenType !== T_LINE_ENDING) {
-      tokenType === T_ANY;
-    }
-
-    const token: Token = [chunk, tokenType];
-    appendToken(block, token);
-    prevToken = token;
-
-    if (is(tokenType, T_LINE_ENDING)) processBlock(block, opts);
-    if (is(tokenType, T_LINE_ENDING) && canExit(block)) {
-      flush()
-    }
-  }
-  flush();
-
-  return blocks;
-}
-
-const tag = (name: string, content?: string, attrs?: Record<string, string>) => {
-  return `<${name}${attrs ? Object.entries(attrs).map(([k, v]) => ` ${k}="${v}"`).join('') : ''}>${content ?? ''}</${name}>`;
-}
-const render = (name: string, block: Block, attrs?: Record<string, string>) => tag(name, renderInline(block), attrs);
-function renderBlock(block: Block): string {
-  switch (getBlockType(block)) {
-    case B_THEMATIC_BREAK: return '<hr />';
-    case B_ATX_HEADING: return render('h' + getBlockData(block, DATA_HEADING_LEVEL), block);
-    case B_SETEXT_HEADING: return render('h' + getBlockData(block, DATA_HEADING_LEVEL), block);
-    case B_SETEXT_BREAK:
-    case B_PARAGRAPH: return render('p', block);
-    case B_INDENTED_CODE: return tag('pre', render('code', block));
-    case B_FENCED_CODE: {
-      const rawAttrs = getBlockData(block, DATA_FENCE_ATTRS)
-      const { language = '', ...userData } = rawAttrs ? splitAttrs(`language=${rawAttrs.trimStart()}`) : {};
-      return tag('pre', render('code', block, language ? { class: `language-${language}` } : undefined));
-    }
-  }
-  return '';
-}
-
-function renderInline(block: Block): string {
-  switch (getBlockType(block)) {
-    case B_SETEXT_BREAK:
-    case B_PARAGRAPH: return getBlockText(block).trim().replace(LEADING_WHITESPACE_RE, '');
-    case B_ATX_HEADING: return getBlockText(block).replace(ATX_TRAILER_RE, '').trim();
-    case B_INDENTED_CODE:
-    case B_FENCED_CODE: return getBlockText(block).trim() ? getBlockText(block).trim() + '\n' : '';
-  }
-  return getBlockText(block).trim();
-}
-
-function appendToken(block: Block, token: Token) {
-  if (TOKENS_INLINE.has(getTokenType(token))) {
-    setBlockData(block, DATA_HAS_INLINE, true);
-  } else if (getTokenType(token) === T_LINE_ENDING && getTokenValue(token).length > 1) {
-    setBlockData(block, DATA_DOUBLE_LINE_ENDING, true);
-  }
-  getBlockTokens(block).push(token);
-}
-
-function canExit(block: Block): boolean {
-  const type = getBlockType(block);
-  if (type === B_PARAGRAPH) {
-    return true;
-  } else if (type === B_HTML) {
-    const chunk = block[0].map(t => t[0]).join('');
-    const condition: number = block[2][0];
-    // TODO: correct end conditions
-    return false;
-    // return BLOCK_HTML_CLOSE_RE[condition]?.test(chunk) ?? block.tokens[block.tokens.length - 1][1] === T_LINE_ENDING;
-  } else if (is(type, B_LINK_REFERENCE) && getBlockData(block, DATA_LINK_REF_END)) {
-    return false;
-  } else if (getBlockType(block) === B_FENCED_CODE) {
-    const tokens = getBlockTokens(block);
-    const chunk = getTokenValue(getBlockToken(block, len(tokens) - 2) ?? []);
-    if (chunk === getBlockData(block, DATA_FENCE_OPENER)) {
-      block[0] = block[0].slice(0, len(tokens) - 2);
-      return true;
-    } else {
-      return false;
-    }
-  }
-  return true;
-}
-
-function processBlock(block: Block, opts: Options) {
-  if (getBlockType(block) !== B_UNKNOWN) return;
-
-  let token = getBlockToken(block, 0);
-  let i = 0;
-  if (!token || is(getTokenType(token), T_LINE_ENDING)) return setBlockType(block, B_BLANK_LINE);
-  
-  if (is(getTokenType(token), T_WHITESPACE)) {
-    if (len(getTokenValue(token)) >= 4) {
-      return setBlockType(block, B_INDENTED_CODE);
-    }
-    token = getBlockToken(block, 1);
-    i = 1;
-  }
-  const [value, type] = token;
-
-  if (is(type, T_ANY)) {
-    return setBlockType(block, B_PARAGRAPH);
-  }
-
-  if (isAny(type, T_DASH, T_UNDERLINE, T_ASTERISK)) {
-    let count = len(value);
-    for (let j = i + 1; j < len(getBlockTokens(block)); j++) {
-      const [next, nextType] = getBlockToken(block, j);
-      if (nextType === type) {
-        count += len(getTokenValue(token));
-      } else if (isAny(nextType, T_ANY, T_LINE_ENDING) && len(next.trim()) === 0) {
-        continue;
-      } else {
-        count = -1;
-        break;
-      }
-    }
-    if (count >= 3) return setBlockType(block, B_THEMATIC_BREAK);
-  }
-
-  if (isAny(type, T_EQUALS, T_DASH)) {
-    let count = len(value);
-    for (let j = i + 1; j < len(getBlockTokens(block)); j++) {
-      const [next, nextType] = getBlockToken(block, j);
-      if (nextType === type) {
-        count += len(getTokenValue(token));
-      } else if (isAny(nextType, T_ANY, T_LINE_ENDING) && len(next.trim()) === 0) {
-        continue;
-      } else {
-        count = -1;
-        break;
-      }
-    }
-    if (count >= 1) {
-      setBlockData(block, DATA_HEADING_LEVEL, type === T_EQUALS ? 1 : 2);
-      return setBlockType(block, B_SETEXT_BREAK);
-    }
-  }
-
-  if (is(type, T_HASH) && len(value) < 7) {
-    // No permissive ATX Headers
-    if (!startsWithWhitespace(getTokenValue(getBlockToken(block, i + 1)))) return setBlockType(block, B_PARAGRAPH);
-
-    setBlockData(block, DATA_HEADING_LEVEL, len(getTokenValue(token)));
-    sliceBlockTokens(block, i + 1);
-    return setBlockType(block, B_ATX_HEADING);
-  }
-
-  if (isAny(type, T_BACKTICK, T_TILDE) && len(value) >= 3) {
-    setBlockData(block, DATA_FENCE_OPENER, value);
-    let end = i + 1;
-    for (let j = i + 1; j < len(getBlockTokens(block)); j++) {
-      const token = getBlockToken(block, j);
-      if (getTokenType(token) === T_LINE_ENDING) {
-        end = j;
-        break;
-      }
-      if (type === T_BACKTICK && getTokenValue(token) === value) {
-        return setBlockType(block, B_PARAGRAPH);
-      }
-    }
-    const attrs = getBlockTokens(block).slice(i + 1, end).map(t => t[0]).join('');
-    if (attrs.trim()) {
-      setBlockData(block, DATA_FENCE_ATTRS, attrs);
-    }
-    sliceBlockTokens(block, end);
-    return setBlockType(block, B_FENCED_CODE);
-  }
-
-  if (is(type, T_LESS_THAN)) {
-    const value = getTokenValue(getBlockToken(block, i + 1));
-    if (HTML_PRE.has(value) || HTML_INLINE.has(value)) return setBlockType(block, B_HTML);
-  }
-
-  if (is(type, T_GREATER_THAN)) {
-    return setBlockType(block, C_BLOCKQUOTE);
-  }
-
-  if (is(type, T_OPEN_BRACE)) {
-    const tokens = getBlockTokens(block);
-    for (let j = i; j < len(tokens); j++) {
-      const type = getTokenType(tokens[j]);
-      if (is(type, T_LINE_ENDING)) {
-        return setBlockType(block, B_LINK_REFERENCE);
-      }
-      const nextType = getTokenType(tokens[j + 1] ?? []);
-      if (is(type, T_CLOSE_BRACE) && is(nextType, T_COLON)) {
-        setBlockData(block, DATA_LINK_REF_START, i + 1);
-        setBlockData(block, DATA_LINK_REF_END, j);
-        return setBlockType(block, B_LINK_REFERENCE);
-      }
-    }
-  }
-
-  if (getTokenType(getBlockTokens(block)[0]) === T_WHITESPACE) {
-    return setBlockType(block, B_BLANK_LINE);
-  }
-
-  return setBlockType(block, B_PARAGRAPH);
-}
-
-function processLinkReferences(blocks: Block[]) {
-  let refs: Record<string, () => string[]> = {};
-  for (const block of blocks) {
-    if (getBlockType(block) === B_LINK_REFERENCE) {
-      const id = getBlockText(block,getBlockData(block, DATA_LINK_REF_START), getBlockData(block, DATA_LINK_REF_END));
-      if (id in refs) continue;
-      refs[id] = () => {
-        const info = getBlockText(block, getBlockData(block, DATA_LINK_REF_END) + 2).trim();
-        return info.split(' ');
-      };
-    }
-  }
-  return refs;
-}
+export const parse = (input: string) => {
+  const p = createParser();
+  return p.push(input) + p.end();
+};
