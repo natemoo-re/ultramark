@@ -55,6 +55,7 @@
     "ultrahtml": "^1.7.0"
   },
   "devDependencies": {
+    "binaryen": "^131.0.0",
     "commonmark": "^0.31.2",
     "esbuild": "^0.25.0",
     "happy-dom": "^17.0.0",
@@ -64,6 +65,7 @@
     "mitata": "^1.0.34",
     "terser": "^5.49.0",
     "typescript": "^5.8.0",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "wabt": "^1.0.39"
   }
 }
