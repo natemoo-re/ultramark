@@ -67,6 +67,22 @@ describe('streaming', () => {
         expect(q.peek()).toEqual('<p><strong><em>bo</em></strong></p>\n');
     })
 
+    it('peek flips to a table as soon as a delimiter cell exists', () => {
+        const p = createParser();
+        p.push('| a | b |');
+        expect(p.peek()).toEqual('<p>| a | b |</p>\n'); // pipes alone are ambiguous
+        p.push('\n|-');
+        expect(p.peek()).toEqual('<table>\n<thead>\n<tr><th>a</th><th>b</th></tr>\n</thead>\n<tbody>\n</tbody>\n</table>\n');
+    })
+
+    it('peek shows checkboxes mid-item', () => {
+        const p = createParser();
+        p.push('- [ ] bu');
+        expect(p.peek()).toEqual('<ul>\n<li><input type="checkbox" disabled> bu</li>\n</ul>\n');
+        p.push('y\n- [x]');
+        expect(p.peek()).toEqual('<ul>\n<li><input type="checkbox" disabled> buy</li>\n<li><input type="checkbox" disabled checked> </li>\n</ul>\n');
+    })
+
     it('peek eagerly links a partial URL after ](', () => {
         const p = createParser();
         p.push('see [the docs](https://exa');

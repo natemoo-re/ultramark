@@ -93,7 +93,7 @@ let il: (s: string) => string = inline;
 const cells = (r: string) => r.replace(/^\s*\||\|\s*$/g, '').split('|').map((c) => c.trim());
 
 const task = (t: string) =>
-  t.replace(/^\[([ xX])\] /, (_, c) => `<input type="checkbox" disabled${c === ' ' ? '' : ' checked'}> `);
+  t.replace(/^\[([ xX])\]( |$)/, (_, c) => `<input type="checkbox" disabled${c === ' ' ? '' : ' checked'}> `);
 
 const renderPara = (ls: string[]): string => {
   // GFM table: header row, delimiter row, body rows — detected at flush time,
