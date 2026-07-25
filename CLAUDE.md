@@ -22,3 +22,4 @@ Aggressively small, streaming, browser-embeddable markdown parser for agents. St
 - `pnpm test` — vitest (node + happy-dom for `test/dom.test.ts`)
 - `pnpm build` — build + size report
 - `pnpm bench` — mitata vs markdown-wasm/marked/markdown-it/commonmark.js over `fixtures/`; benches the shipped `dist/` artifact. Note: callback-style `.replace()` is far slower than literal replacements in V8 — keep the hot path literal.
+- `pnpm demo` — static server (zero-dep `scripts/serve.mjs`) for `demo/index.html`: simulated token stream → `ultramark/dom`, stable appends + dimmed `peek()` tail.

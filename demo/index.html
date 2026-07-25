@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ultramark — streaming demo</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem clamp(1rem, 6vw, 4rem);
+    background: #0d1117; color: #e6edf3;
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem 1.5rem; margin-bottom: 1.5rem; }
+  h1 { font-size: 1.4rem; margin: 0; }
+  h1 code { color: #7ee787; }
+  .tag { color: #8b949e; font-size: .9rem; }
+  .controls { margin-left: auto; display: flex; align-items: center; gap: 1rem; }
+  button {
+    background: #238636; border: 0; border-radius: 6px; color: #fff;
+    padding: .4rem 1rem; font: inherit; cursor: pointer;
+  }
+  button:disabled { background: #21262d; color: #8b949e; cursor: default; }
+  label { color: #8b949e; font-size: .85rem; display: flex; align-items: center; gap: .5rem; }
+  #stats { color: #8b949e; font: .8rem ui-monospace, monospace; min-width: 16ch; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  section { background: #161b22; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }
+  section > h2 {
+    margin: 0; padding: .6rem 1rem; font-size: .75rem; text-transform: uppercase;
+    letter-spacing: .08em; color: #8b949e; border-bottom: 1px solid #30363d;
+    display: flex; justify-content: space-between;
+  }
+  .hint { text-transform: none; letter-spacing: 0; }
+  .hint code { color: #d2a8ff; }
+  #raw {
+    margin: 0; padding: 1rem; min-height: 24rem; white-space: pre-wrap;
+    font: .85rem/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; color: #a5d6ff;
+  }
+  #raw::after { content: "▊"; animation: blink 1s steps(1) infinite; color: #7ee787; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .md { padding: 1rem 1.25rem; min-height: 24rem; }
+  .md > :first-child { margin-top: 0; }
+  .md h1, .md h2, .md h3 { border-bottom: 1px solid #30363d; padding-bottom: .2em; margin: 1em 0 .4em; }
+  .md h1 { font-size: 1.35rem; } .md h2 { font-size: 1.15rem; } .md h3 { font-size: 1rem; }
+  .md code { background: #30363d; border-radius: 4px; padding: .1em .35em; font: .85em ui-monospace, Menlo, monospace; }
+  .md pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: .8rem; overflow-x: auto; }
+  .md pre code { background: none; padding: 0; color: #7ee787; }
+  .md blockquote { margin: 1em 0; padding: .1em 1em; border-left: 3px solid #d2a8ff; color: #b1bac4; }
+  .md table { border-collapse: collapse; margin: 1em 0; }
+  .md th, .md td { border: 1px solid #30363d; padding: .3rem .8rem; }
+  .md th { background: #21262d; }
+  .md a { color: #58a6ff; }
+  .md input[type="checkbox"] { accent-color: #238636; }
+  /* The whole point: stable blocks are appended once; only this tail re-renders */
+  #tail { opacity: .55; animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>ultramark<span style="color:#8b949e">/dom</span></h1>
+  <span class="tag">streaming markdown → DOM · ~1.6 KB gzip</span>
+  <div class="controls">
+    <span id="stats"></span>
+    <label>speed <input id="speed" type="range" min="1" max="100" value="30"></label>
+    <button id="start">▶ stream</button>
+  </div>
+</header>
+<main>
+  <section>
+    <h2>source</h2>
+    <pre id="raw"></pre>
+  </section>
+  <section>
+    <h2>rendered <span class="hint">dim = tentative <code>peek()</code> tail</span></h2>
+    <div id="out" class="md"><div id="tail"></div></div>
+  </section>
+</main>
+
+<script type="text/markdown" id="sample"># Streaming demo
+
+This page is rendering **live** from a simulated token
+stream via `ultramark/dom` — about **1.6 KB** gzipped.
+
+## What is happening?
+
+1. Markdown arrives in tiny random chunks
+2. *Closed* blocks stream straight into the DOM
+3. The dim block below is `peek()` — the tentative tail
+
+- [x] Parse headings
+- [x] Stream fenced code
+- [ ] Ship it
+
+```js
+const p = createDOMParser();
+target.append(p.push(chunk)); // stable, append-only
+```
+
+| entrypoint   |   gzip |
+| ------------ | -----: |
+| strings      | 1.5 KB |
+| `ultramark/dom` | 1.6 KB |
+
+> Stable output is **append-only** —
+> only the tentative tail ever re-renders.
+
+Built with `ultrahtml`'s companion parser. *Fast*, right?
+</script>
+
+<script type="module">
+import { createDOMParser } from '../dist/dom.js';
+
+const SAMPLE = document.getElementById('sample').textContent.trimStart();
+const raw = document.getElementById('raw');
+const out = document.getElementById('out');
+const stats = document.getElementById('stats');
+const speed = document.getElementById('speed');
+const start = document.getElementById('start');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function run() {
+  start.disabled = true;
+  raw.textContent = '';
+  out.replaceChildren();
+  const tail = document.createElement('div');
+  tail.id = 'tail';
+  out.append(tail);
+
+  const t0 = performance.now();
+  let chunks = 0, nodes = 0;
+  // transform hook: demo link rewriting on every streamed element
+  const p = createDOMParser((el) => {
+    if (el.tagName === 'A') el.setAttribute('target', '_blank');
+  });
+
+  let i = 0;
+  while (i < SAMPLE.length) {
+    const n = 1 + Math.floor(Math.random() * 8);
+    const chunk = SAMPLE.slice(i, (i += n));
+    raw.textContent += chunk;
+    chunks++;
+    const stable = p.push(chunk);
+    nodes += stable.childNodes.length;
+    out.insertBefore(stable, tail);      // closed blocks: append once, never touch again
+    tail.replaceChildren(p.peek());      // in-flight block: tentative
+    stats.textContent = `${chunks} chunks · ${nodes} stable nodes`;
+    await sleep(125 - speed.value * 1.2);
+  }
+  out.insertBefore(p.end(), tail);
+  tail.replaceChildren();
+  stats.textContent = `done — ${chunks} chunks · ${nodes} stable nodes · ${(performance.now() - t0).toFixed(0)}ms`;
+  start.disabled = false;
+  start.textContent = '↻ replay';
+}
+
+start.addEventListener('click', run);
+run();
+</script>
+</body>
+</html>

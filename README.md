@@ -89,4 +89,8 @@ Each of these removes a lookahead that would break incremental streaming:
 pnpm install
 pnpm test    # vitest — includes chunk-invariance streaming tests
 pnpm build   # esbuild + terser, prints per-entrypoint byte sizes
+pnpm bench   # mitata vs markdown-wasm/marked/markdown-it/commonmark.js
+pnpm demo    # → http://localhost:3000 — simulated token stream into the DOM
 ```
+
+The demo (`demo/index.html`) renders a simulated LLM stream with `ultramark/dom`: stable blocks append once, and the dimmed tail is `peek()` — the only region that ever re-renders.

@@ -16,6 +16,7 @@
   "scripts": {
     "build": "node scripts/build.mjs && tsc -p .",
     "bench": "pnpm build && node scripts/bench.mjs",
+    "demo": "pnpm build && node scripts/serve.mjs",
     "dev": "vitest",
     "test": "vitest run"
   },
