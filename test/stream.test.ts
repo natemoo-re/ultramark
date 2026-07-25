@@ -49,9 +49,45 @@ describe('streaming', () => {
     it('peek returns the tentative open block', () => {
         const p = createParser();
         p.push('hello *wor');
-        expect(p.peek()).toEqual('<p>hello *wor</p>\n');
+        expect(p.peek()).toEqual('<p>hello <em>wor</em></p>\n');
         p.push('ld*\n\n');
         expect(p.peek()).toEqual('');
+    })
+
+    it('peek eagerly opens unterminated inline constructs', () => {
+        const p = createParser();
+        p.push('some **bo');
+        expect(p.peek()).toEqual('<p>some <strong>bo</strong></p>\n');
+        p.push('ld** and `co');
+        expect(p.peek()).toEqual('<p>some <strong>bold</strong> and <code>co</code></p>\n');
+        p.push('de` plus ~~st');
+        expect(p.peek()).toEqual('<p>some <strong>bold</strong> and <code>code</code> plus <del>st</del></p>\n');
+        const q = createParser();
+        q.push('***bo');
+        expect(q.peek()).toEqual('<p><strong><em>bo</em></strong></p>\n');
+    })
+
+    it('peek eagerly links a partial URL after ](', () => {
+        const p = createParser();
+        p.push('see [the docs](https://exa');
+        expect(p.peek()).toEqual('<p>see <a href="https://exa">the docs</a></p>\n');
+    })
+
+    it('peek does not open ambiguous constructs', () => {
+        const p = createParser();
+        p.push('a ** b and [brackets');  // `**` followed by space, bare `[`
+        expect(p.peek()).toEqual('<p>a ** b and [brackets</p>\n');
+    })
+
+    it('peek speculation never leaks into stable output', () => {
+        const p = createParser();
+        p.push('2 * 3');
+        p.peek(); // would eagerly render <em>3</em> if it leaked
+        expect(p.end()).toEqual('<p>2 * 3</p>\n');
+        const q = createParser();
+        q.push('not **emphasis at all** done');
+        q.peek();
+        expect(q.end()).toEqual('<p>not <strong>emphasis at all</strong> done</p>\n');
     })
 
     it('peek renders an unterminated fence', () => {

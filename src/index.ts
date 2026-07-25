@@ -16,11 +16,12 @@ const esc = (s: string) =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
+const url = (u: string) => (/^\s*(javascript|vbscript):/i.test(u) ? '#' : u);
+
 export const inline = (s: string): string => {
   const st: string[] = [];
   // Stash raw HTML behind \x00N\x00 so later passes can't touch it
   const keep = (h: string) => `\x00${st.push(h) - 1}\x00`;
-  const url = (u: string) => (/^\s*(javascript|vbscript):/i.test(u) ? '#' : u);
   s = esc(s)
     // code spans (contents protected)
     .replace(/`([^`]+)`/g, (_, m) => keep(`<code>${m}</code>`))
@@ -45,6 +46,50 @@ export const inline = (s: string): string => {
   return s.replace(/\x00(\d+)\x00/g, (_, i) => st[i]);
 };
 
+// Optimistic inline rendering for peek(): treat an unterminated trailing
+// construct as an open element. Tentative by definition — a wrong guess
+// self-corrects on the next chunk. Stable output never uses this.
+const eager = (s: string): string => {
+  // unterminated code span: everything after the last backtick is code
+  if ((s.split('`').length - 1) % 2) {
+    const i = s.lastIndexOf('`');
+    return eager(s.slice(0, i)) + `<code>${esc(s.slice(i + 1))}</code>`;
+  }
+  // link/image with a partial URL — `](` is the unambiguous signal
+  const lk = /(!?)\[([^\]]*)\]\(([^)\s]*)$/.exec(s);
+  if (lk)
+    return (
+      eager(s.slice(0, lk.index)) +
+      (lk[1] ? `<img src="${url(lk[3])}" alt="${lk[2]}">` : `<a href="${url(lk[3])}">${eager(lk[2])}</a>`)
+    );
+  // unterminated emphasis: last opener followed by a non-space char
+  let best = -1,
+    open = '',
+    shut = '',
+    width = 0;
+  for (const [m, o, c] of [
+    ['***', '<strong><em>', '</em></strong>'],
+    ['**', '<strong>', '</strong>'],
+    ['~~', '<del>', '</del>'],
+    ['*', '<em>', '</em>'],
+  ]) {
+    const i = s.lastIndexOf(m),
+      n = s[i + m.length];
+    if (i > best && n && !/\s/.test(n) && (m[0] !== '*' || (s[i - 1] !== '*' && n !== '*'))) {
+      best = i;
+      open = o;
+      shut = c;
+      width = m.length;
+    }
+  }
+  if (best > -1) return eager(s.slice(0, best)) + open + eager(s.slice(best + width)) + shut;
+  return inline(s);
+};
+
+// Active inline renderer — renderers always go through this so peek() can
+// swap in the optimistic variant. Stable paths always see `inline`.
+let il: (s: string) => string = inline;
+
 const cells = (r: string) => r.replace(/^\s*\||\|\s*$/g, '').split('|').map((c) => c.trim());
 
 const task = (t: string) =>
@@ -60,13 +105,13 @@ const renderPara = (ls: string[]): string => {
     const at = (i: number) => (al[i] ? ` align="${al[i]}"` : '');
     let h =
       '<table>\n<thead>\n<tr>' +
-      cells(ls[0]).map((c, i) => `<th${at(i)}>${inline(c)}</th>`).join('') +
+      cells(ls[0]).map((c, i) => `<th${at(i)}>${il(c)}</th>`).join('') +
       '</tr>\n</thead>\n<tbody>\n';
     for (const r of ls.slice(2))
-      h += '<tr>' + cells(r).map((c, i) => `<td${at(i)}>${inline(c)}</td>`).join('') + '</tr>\n';
+      h += '<tr>' + cells(r).map((c, i) => `<td${at(i)}>${il(c)}</td>`).join('') + '</tr>\n';
     return h + '</tbody>\n</table>\n';
   }
-  return `<p>${inline(ls.join('\n'))}</p>\n`;
+  return `<p>${il(ls.join('\n'))}</p>\n`;
 };
 
 const renderFence = (ls: string[], info: string): string =>
@@ -82,7 +127,7 @@ const renderList = (items: any[][]): string => {
     const kids: any[][] = [];
     let j = i + 1;
     while (j < items.length && items[j][0] > it[0]) kids.push(items[j++]);
-    h += `<li>${task(inline(it[2]))}${kids.length ? '\n' + renderList(kids).slice(0, -1) : ''}</li>\n`;
+    h += `<li>${task(il(it[2]))}${kids.length ? '\n' + renderList(kids).slice(0, -1) : ''}</li>\n`;
     i = j;
   }
   return h + `</${tag}>\n`;
@@ -144,7 +189,7 @@ export const createParser = (): Parser => {
       return h;
     }
     if ((m = line.match(/^\s{0,3}(#{1,6})(?:\s+|$)(.*)$/)))
-      return close() + `<h${m[1].length}>${inline(m[2].replace(/\s+#*\s*$/, '').trimEnd())}</h${m[1].length}>\n`;
+      return close() + `<h${m[1].length}>${il(m[2].replace(/\s+#*\s*$/, '').trimEnd())}</h${m[1].length}>\n`;
     if (/^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) return close() + '<hr>\n';
     if ((m = line.match(/^\s{0,3}>[ ]?(.*)$/))) {
       if (open !== 'q') h = swap('q');
@@ -173,12 +218,15 @@ export const createParser = (): Parser => {
       return h;
     },
     peek: () => {
-      // tentatively feed the buffered partial line, then roll state back
+      // tentatively feed the buffered partial line, then roll state back;
+      // inline rendering is optimistic (unterminated constructs shown open)
       const o = open,
         l = lines.slice(),
         i = info,
         f = fenceEnd;
+      il = eager;
       const h = (buf ? feed(buf) : '') + draft();
+      il = inline;
       open = o;
       lines = l;
       info = i;
