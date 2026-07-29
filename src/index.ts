@@ -54,7 +54,7 @@ export const inline = (s: string): string => {
 const eager = (s: string): string => {
   // a trailing run of markers is unresolved syntax: hide it (it will render
   // as an opener once content follows, or pop in literal at close)
-  const t = /(\*{1,3}|~~|`)$/.exec(s);
+  const t = /(\*{1,3}|~{1,2}|`)$/.exec(s);
   if (t) return eager(s.slice(0, t.index));
   // unterminated code span: everything after the last backtick is code
   if ((s.split('`').length - 1) % 2) {
@@ -231,7 +231,17 @@ export const createParser = (): Parser => {
         i = info,
         f = fenceEnd;
       il = eager;
-      const h = (buf ? feed(buf) : '') + draft();
+      let h = '';
+      // ...but a partial line that is still-resolving line-start syntax
+      // (list/fence/hr markers, partial checkbox) is withheld, not fed
+      if (buf && !/^\s*(\d+[.)]?|[-*+`~]{1,2})$/.test(buf)) {
+        const cb = /^(\s*(?:(?:\d+)[.)]|[-*+])\s+)\[[ xX]?$/.exec(buf);
+        h = feed(cb ? cb[1] : buf);
+      }
+      const d = draft();
+      // a paragraph starting with `|` is a table-in-progress: withhold it
+      // until a delimiter cell proves it (or it pops in as prose at close)
+      h += d.startsWith('<p>|') ? '' : d;
       il = inline;
       open = o;
       lines = l;

@@ -99,9 +99,38 @@ describe('streaming', () => {
     it('peek flips to a table as soon as a delimiter cell exists', () => {
         const p = createParser();
         p.push('| a | b |');
-        expect(p.peek()).toEqual('<p>| a | b |</p>\n'); // pipes alone are ambiguous
+        expect(p.peek()).toEqual(''); // header withheld: pipes alone are ambiguous
         p.push('\n|-');
         expect(p.peek()).toEqual('<table>\n<thead>\n<tr><th>a</th><th>b</th></tr>\n</thead>\n<tbody>\n</tbody>\n</table>\n');
+    })
+
+    it('peek withholds resolving line-start syntax', () => {
+        for (const partial of ['-', '*', '`', '``', '~', '--', '1', '1.', '2)']) {
+            const p = createParser();
+            p.push(partial);
+            expect(p.peek(), JSON.stringify(partial)).toEqual('');
+        }
+    })
+
+    it('peek withholds partial checkboxes but keeps the item', () => {
+        const p = createParser();
+        p.push('- [');
+        expect(p.peek()).toEqual('<ul>\n<li></li>\n</ul>\n');
+        p.push(' ');
+        expect(p.peek()).toEqual('<ul>\n<li></li>\n</ul>\n');
+        p.push(']');
+        expect(p.peek()).toEqual('<ul>\n<li><input type="checkbox" disabled> </li>\n</ul>\n');
+    })
+
+    it('never shows raw syntax at any point in a stream', () => {
+        const doc = '# T\n\npara with **bold** and `code` and ~~strike~~ ok\n\n- [ ] task\n- [x] done\n\n1. one\n2. two\n\n```js\nlet x = 1;\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n';
+        const p = createParser();
+        for (const ch of doc) {
+            p.push(ch);
+            const pk = p.peek();
+            expect(pk.replace(/<[^>]*>/g, '')).not.toMatch(/[\*`~]/);
+            expect(pk).not.toMatch(/^<p>\|/m);
+        }
     })
 
     it('peek shows checkboxes mid-item', () => {
