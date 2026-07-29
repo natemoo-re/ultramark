@@ -33,7 +33,7 @@ stableHTML += p.end(); // flush
 ```
 
 - `push(chunk): string` — HTML for blocks *closed* by this chunk. A block is only emitted once it's complete, so stable output is always well-formed.
-- `peek(): string` — tentative render of the currently-open block (including the buffered partial line). **Optimistic**: unterminated inline constructs are rendered as open elements (`**bol` → `<strong>bol</strong>`, `` `co` `` → `<code>co</code>`, `[text](https://exa` → a partial link), so the live tail shows formatted output instead of raw syntax. A wrong guess self-corrects on the next chunk; stable output is never affected.
+- `peek(): string` — tentative render of the currently-open block (including the buffered partial line). **Optimistic and syntax-free**: unterminated constructs render as open elements (`**bol` → `<strong>bol</strong>`, `` `co` `` → `<code>co</code>`, `[text](https://exa` → a partial link), and a trailing unresolved marker run is withheld entirely (`about **` → `about `) — peek never shows raw markdown syntax. Content that turns out literal pops in, corrected, at close; stable output is never affected.
 - `end(): string` — flush the remaining buffer and any open block.
 
 ### `ultramark/ast`

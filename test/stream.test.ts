@@ -67,6 +67,35 @@ describe('streaming', () => {
         expect(q.peek()).toEqual('<p><strong><em>bo</em></strong></p>\n');
     })
 
+    it('peek withholds trailing unresolved markers (no FOUT)', () => {
+        const p = createParser();
+        p.push('about **');
+        expect(p.peek()).toEqual('<p>about </p>\n');
+        p.push('1.6 KB');
+        expect(p.peek()).toEqual('<p>about <strong>1.6 KB</strong></p>\n');
+    })
+
+    it('withheld markers still render just-closed constructs', () => {
+        for (const [md, html] of [
+            ['**bold**', '<p><strong>bold</strong></p>\n'],
+            ['`x`', '<p><code>x</code></p>\n'],
+            ['a *b*', '<p>a <em>b</em></p>\n'],
+            ['~~gone~~', '<p><del>gone</del></p>\n'],
+        ]) {
+            const p = createParser();
+            p.push(md);
+            expect(p.peek(), md).toEqual(html);
+        }
+    })
+
+    it('withheld markers pop in literal when disproven', () => {
+        const p = createParser();
+        p.push('a **');
+        expect(p.peek()).toEqual('<p>a </p>\n');
+        p.push(' b');
+        expect(p.peek()).toEqual('<p>a ** b</p>\n');
+    })
+
     it('peek flips to a table as soon as a delimiter cell exists', () => {
         const p = createParser();
         p.push('| a | b |');

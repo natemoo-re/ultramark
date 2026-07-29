@@ -47,9 +47,15 @@ export const inline = (s: string): string => {
 };
 
 // Optimistic inline rendering for peek(): treat an unterminated trailing
-// construct as an open element. Tentative by definition — a wrong guess
-// self-corrects on the next chunk. Stable output never uses this.
+// construct as an open element, and withhold a trailing unresolved marker
+// run entirely — peek never shows raw syntax (no FOUT). Tentative by
+// definition — content that turns out literal pops in, corrected, at close.
+// Stable output never uses this.
 const eager = (s: string): string => {
+  // a trailing run of markers is unresolved syntax: hide it (it will render
+  // as an opener once content follows, or pop in literal at close)
+  const t = /(\*{1,3}|~~|`)$/.exec(s);
+  if (t) return eager(s.slice(0, t.index));
   // unterminated code span: everything after the last backtick is code
   if ((s.split('`').length - 1) % 2) {
     const i = s.lastIndexOf('`');
