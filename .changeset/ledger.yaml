@@ -1,0 +1,4 @@
+ultramark@0.1.0:
+  dir: ""
+  intents:
+    - streaming-rewrite
