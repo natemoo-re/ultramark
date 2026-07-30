@@ -13,6 +13,7 @@ Aggressively small, streaming, browser-embeddable markdown parser for agents. St
 
 ## Conventions
 
+- **Changesets are required** for user-facing changes: `pnpm change` records a `.changeset/*.md` intent (present-tense, user-facing message; minor = feature, patch = fix). CI consumes them on main via `pnpm version -r` → `pnpm publish -r` (npm trusted publishing, OIDC).
 - Subset calls (setext→hr, escaped HTML, no ref links, no `_` emphasis, single-line list items, …) are documented in README.md and tested in `test/subset.test.ts`. Any new call must be added to both.
 - Streaming correctness is enforced by chunk-invariance tests (`test/stream.test.ts`): chunked input must equal one-shot `parse`.
 - Size is a feature. `pnpm build` prints raw + gzip bytes per entrypoint; core should stay well under 2 KB gzip. Codegolf techniques are welcome in the core (regex pipelines, stash placeholders, dispatch maps) but keep tests exhaustive to match.

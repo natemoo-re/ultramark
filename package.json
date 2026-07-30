@@ -1,7 +1,7 @@
 {
   "name": "ultramark",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.0.4",
   "description": "Aggressively small, streaming markdown for agents (strict subset)",
   "types": "./dist/index.d.ts",
   "repository": {
@@ -51,7 +51,7 @@
     "url": "https://natemoo.re"
   },
   "license": "MIT",
-  "packageManager": "pnpm@10.15.1",
+  "packageManager": "pnpm@11.18.0",
   "dependencies": {
     "ultrahtml": "^1.7.0"
   },
