@@ -1,0 +1,6 @@
+allowBuilds:
+  esbuild: true
+
+versioning:
+  changelog:
+    storage: repository

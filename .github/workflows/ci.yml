@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Test & Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push release commits + tags
+      id-token: write # npm trusted publishing (OIDC)
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: "pnpm"
+      - run: pnpm install
+      - run: pnpm run build
+      - run: pnpm run test
+      - name: Consume changesets
+        if: ${{ github.event_name != 'pull_request' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          pnpm version -r
+          git add .
+          git diff --staged --quiet || git commit -m "[ci] release"
+      - name: Publish to npm
+        if: ${{ github.event_name != 'pull_request' }}
+        run: pnpm publish -r
+      - name: Push release commit
+        if: ${{ github.event_name != 'pull_request' }}
+        run: git push --follow-tags
